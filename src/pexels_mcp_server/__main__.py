@@ -60,14 +60,38 @@ def main() -> None:
 
     host = os.environ.get("HOST", "127.0.0.1")
     port = int(os.environ.get("PORT", "8000"))
-    mcp.settings.host = host
-    mcp.settings.port = port
+    auth_token = os.environ.get("MCP_AUTH_TOKEN", "").strip()
+
+    # Build the Starlette app and layer middleware before running uvicorn.
+    # This is the only way to insert auth and a /healthz endpoint without
+    # forking FastMCP.
+    from typing import cast
+
+    import uvicorn
+
+    from .transport import ASGIApp, bearer_auth_middleware, healthz_middleware
+
+    # Starlette implements the ASGI3 protocol but its type is not
+    # interchangeable with the bare callable signature mypy infers for
+    # ASGIApp. Cast once at the boundary; downstream middleware stays typed.
+    app: ASGIApp = cast(ASGIApp, mcp.streamable_http_app())
+    app = healthz_middleware(app)
+    if auth_token:
+        app = bearer_auth_middleware(app, auth_token)
+        logger.info("Bearer auth enabled (MCP_AUTH_TOKEN is set).")
+    else:
+        logger.warning(
+            "MCP_AUTH_TOKEN is not set. The /mcp endpoint is open to anyone "
+            "who can reach this host. Set MCP_AUTH_TOKEN before exposing "
+            "the server publicly."
+        )
+
     logger.info(
         "Starting pexels-mcp-server on streamable-http transport (%s:%d)",
         host,
         port,
     )
-    mcp.run(transport="streamable-http")
+    uvicorn.run(app, host=host, port=port, log_config=None, access_log=False)
 
 
 if __name__ == "__main__":

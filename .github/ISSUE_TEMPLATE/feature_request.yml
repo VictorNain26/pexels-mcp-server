@@ -1,0 +1,36 @@
+name: Feature request
+description: Propose a new tool, option, or change in behavior.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before opening, please confirm the feature is not already covered by an existing tool. See the README tool table.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What does an agent (or its user) struggle to do today with the current tools?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: New tool? New parameter? Different default? Sketch the API and the call flow.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Any existing workaround using the current tools.
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Scope
+      options:
+        - label: Does NOT require Pexels OAuth (My Collections is out of scope).
+          required: true
+        - label: Read-only against the Pexels API.
+          required: true

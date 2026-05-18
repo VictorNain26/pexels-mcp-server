@@ -1,0 +1,62 @@
+name: Bug report
+description: Something is broken or behaves unexpectedly.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. Please fill in every section. Issues without reproduction steps will be closed.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: One sentence about what is broken.
+      placeholder: pexels_search_photos returns 0 results for queries containing accents.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction steps
+      description: Exact command or tool call. Include the MCP client (Claude Desktop, Claude Code, Cursor, ...) and version.
+      placeholder: |
+        1. Configured server with `uvx --from git+https://...`
+        2. Called pexels_search_photos with {"query": "café", "per_page": 5}
+        3. Got total_results=0 even though the same query works on pexels.com
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Server logs (stderr)
+      description: Run with `LOG_LEVEL=DEBUG` and paste the relevant lines. Redact your API key.
+      render: text
+  - type: input
+    id: version
+    attributes:
+      label: Server version / commit
+      placeholder: 0.2.0 or git SHA
+    validations:
+      required: true
+  - type: input
+    id: python
+    attributes:
+      label: Python version
+      placeholder: 3.12.4
+    validations:
+      required: true
+  - type: dropdown
+    id: transport
+    attributes:
+      label: Transport
+      options:
+        - stdio
+        - streamable-http
+    validations:
+      required: true

@@ -10,10 +10,17 @@ from __future__ import annotations
 
 import re
 from enum import Enum
+from urllib.parse import urlparse
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from .constants import DEFAULT_PAGE, DEFAULT_PER_PAGE, MAX_PER_PAGE
+from .constants import (
+    DEFAULT_PAGE,
+    DEFAULT_PER_PAGE,
+    MAX_PER_PAGE,
+    PEXELS_CDN_HOSTS,
+    PREVIEW_MAX_COUNT,
+)
 
 _HEX_COLOR_RE = re.compile(r"^[0-9A-Fa-f]{6}$")
 
@@ -255,3 +262,32 @@ class CollectionMediaParams(Pagination):
         description="Sort by creation date (asc or desc).",
     )
     response_format: ResponseFormat = Field(default=ResponseFormat.JSON)
+
+
+class PreviewMediaParams(_StrictModel):
+    """Inputs for ``pexels_preview_media``."""
+
+    thumbnail_urls: list[str] = Field(
+        min_length=1,
+        max_length=PREVIEW_MAX_COUNT,
+        description=(
+            f"Pexels CDN thumbnail URLs from a previous search result. "
+            f"Max {PREVIEW_MAX_COUNT} per call. Use the 'thumbnail_url' field "
+            "from pexels_search_photos or the 'preview_image_url' field from "
+            "pexels_search_videos."
+        ),
+    )
+
+    @field_validator("thumbnail_urls")
+    @classmethod
+    def _check_hosts(cls, urls: list[str]) -> list[str]:
+        for url in urls:
+            parsed = urlparse(url)
+            if parsed.scheme != "https":
+                raise ValueError(f"thumbnail_urls must use https: got {url!r}")
+            if parsed.hostname not in PEXELS_CDN_HOSTS:
+                raise ValueError(
+                    f"thumbnail_urls must point to {sorted(PEXELS_CDN_HOSTS)}; "
+                    f"got host {parsed.hostname!r} in {url!r}"
+                )
+        return urls
