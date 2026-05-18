@@ -61,14 +61,13 @@ class AppContext:
 
 @asynccontextmanager
 async def _lifespan(_server: FastMCP) -> AsyncIterator[AppContext]:
-    """Boot a single ``PexelsClient`` for the server lifetime."""
-    api_key = os.environ.get("PEXELS_API_KEY", "")
-    if not api_key:
-        raise PexelsAuthError(
-            "Pexels API key is invalid or missing. "
-            "Set PEXELS_API_KEY env var. Get a key at https://www.pexels.com/api/"
-        )
-    client = PexelsClient(api_key=api_key)
+    """Boot a single ``PexelsClient`` for the server lifetime.
+
+    Missing-key validation lives in ``PexelsClient.__init__`` and in the CLI
+    entrypoint (``__main__.main``) so the FastMCP task group never has to
+    surface a wrapped ``PexelsAuthError``.
+    """
+    client = PexelsClient(api_key=os.environ.get("PEXELS_API_KEY", ""))
     logger.info("Pexels client ready (transport managed by FastMCP).")
     try:
         yield AppContext(client=client)

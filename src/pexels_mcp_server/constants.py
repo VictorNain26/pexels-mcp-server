@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from importlib.metadata import PackageNotFoundError, version
 from typing import Final
 
 BASE_URL: Final[str] = "https://api.pexels.com"
@@ -16,8 +17,16 @@ DEFAULT_PAGE: Final[int] = 1
 HTTP_TIMEOUT_SECONDS: Final[float] = 15.0
 RETRY_BACKOFF_SECONDS: Final[float] = 1.0
 
+
+def _resolve_version() -> str:
+    try:
+        return version("pexels-mcp")
+    except PackageNotFoundError:
+        return "0.0.0+unknown"
+
+
 USER_AGENT: Final[str] = (
-    "pexels-mcp-server/0.1.0 (+https://github.com/VictorNain26/pexels-mcp-server)"
+    f"pexels-mcp-server/{_resolve_version()} (+https://github.com/VictorNain26/pexels-mcp-server)"
 )
 
 PEXELS_ATTRIBUTION: Final[str] = "Photos provided by Pexels (https://www.pexels.com)"

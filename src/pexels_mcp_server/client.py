@@ -235,6 +235,9 @@ class PexelsClient:
         )
 
     async def get_video(self, video_id: int) -> tuple[dict[str, Any], dict[str, Any]]:
+        # Pexels exposes the single-video endpoint at /videos/videos/:id. The
+        # repeated "videos" segment is intentional per the official docs:
+        # https://www.pexels.com/api/documentation/#videos-show
         return await self._request(f"{VIDEOS_PREFIX}/videos/{video_id}")
 
     async def list_featured_collections(

@@ -8,11 +8,14 @@ before hitting the Pexels API.
 
 from __future__ import annotations
 
+import re
 from enum import Enum
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .constants import DEFAULT_PAGE, DEFAULT_PER_PAGE, MAX_PER_PAGE
+
+_HEX_COLOR_RE = re.compile(r"^[0-9A-Fa-f]{6}$")
 
 
 class ResponseFormat(str, Enum):
@@ -142,7 +145,11 @@ class SearchPhotosParams(Pagination):
     color: str | None = Field(
         default=None,
         max_length=32,
-        description="Color filter. One of the named colors or a 6-digit hex without leading '#'.",
+        description=(
+            "Color filter. One of: "
+            + ", ".join(c.value for c in PhotoColor)
+            + " — or a 6-digit hex without leading '#'."
+        ),
     )
     locale: str | None = Field(
         default=None,
@@ -153,6 +160,20 @@ class SearchPhotosParams(Pagination):
         default=ResponseFormat.MARKDOWN,
         description="Output format. markdown for humans, json for downstream processing.",
     )
+
+    @field_validator("color")
+    @classmethod
+    def _check_color(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        named = {c.value for c in PhotoColor}
+        if value.lower() in named:
+            return value.lower()
+        if _HEX_COLOR_RE.match(value):
+            return value.lower()
+        raise ValueError(
+            "color must be one of " + ", ".join(sorted(named)) + " or a 6-digit hex without '#'."
+        )
 
 
 class CuratedPhotosParams(Pagination):

@@ -262,7 +262,8 @@ def format_collection_media(
     if response_format == "json":
         return json.dumps(envelope, indent=2, ensure_ascii=False)
     header = (
-        f"**Pexels collection {payload.get('id')}** - {total} total, "
+        f"**Pexels collection {_safe(payload.get('id'), '(unknown)')}** - "
+        f"{_safe(total, '?')} total, "
         f"page {page} ({envelope['count']} shown)"
     )
     photo_block = "\n\n".join(photo_to_markdown(p) for p in photos)

@@ -91,6 +91,17 @@ async def test_client_raises_on_401(httpx_mock: HTTPXMock) -> None:
             await client.search_photos(query="cat")
 
 
+async def test_client_raises_on_403(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(
+        url=f"{BASE_URL}/v1/curated?page=1&per_page=15",
+        status_code=403,
+        json={"error": "forbidden"},
+    )
+    async with PexelsClient(api_key="restricted") as client:
+        with pytest.raises(PexelsAuthError):
+            await client.curated_photos()
+
+
 async def test_client_raises_on_429(httpx_mock: HTTPXMock) -> None:
     httpx_mock.add_response(
         url=f"{BASE_URL}/v1/search?query=cat&page=1&per_page=15",

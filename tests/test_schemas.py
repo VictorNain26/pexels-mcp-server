@@ -72,3 +72,23 @@ def test_collection_media_strips_whitespace() -> None:
 def test_response_format_enum_round_trip() -> None:
     params = SearchPhotosParams(query="dogs", response_format=ResponseFormat.JSON)
     assert params.response_format.value == "json"
+
+
+def test_search_photos_accepts_named_color() -> None:
+    params = SearchPhotosParams(query="dogs", color="RED")
+    assert params.color == "red"
+
+
+def test_search_photos_accepts_hex_color() -> None:
+    params = SearchPhotosParams(query="dogs", color="A1B2C3")
+    assert params.color == "a1b2c3"
+
+
+def test_search_photos_rejects_unknown_color() -> None:
+    with pytest.raises(ValidationError):
+        SearchPhotosParams(query="dogs", color="banana")
+
+
+def test_search_photos_rejects_malformed_hex() -> None:
+    with pytest.raises(ValidationError):
+        SearchPhotosParams(query="dogs", color="#ff00ff")
