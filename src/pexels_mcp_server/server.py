@@ -19,6 +19,7 @@ from typing import Any
 
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.fastmcp.utilities.types import Image
+from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
 from pydantic import ValidationError
 
@@ -82,7 +83,30 @@ async def _lifespan(_server: FastMCP) -> AsyncIterator[AppContext]:
         logger.info("Pexels client closed.")
 
 
-mcp: FastMCP = FastMCP(name="pexels-mcp-server", lifespan=_lifespan)
+def _build_transport_security() -> TransportSecuritySettings:
+    """Configure DNS rebinding protection for the HTTP transport.
+
+    By default FastMCP enables a strict ``allowed_hosts`` whitelist limited to
+    localhost, which is correct for laptop dev but breaks every public
+    deployment (the Host header is the platform's domain). The Bearer auth
+    middleware already covers the threat that DNS rebinding aims at, so we
+    flip the default and let operators opt back in via ``MCP_ALLOWED_HOSTS``
+    (comma-separated, supports the ``host:*`` wildcard the SDK accepts).
+    """
+    allowed_hosts_env = os.environ.get("MCP_ALLOWED_HOSTS", "").strip()
+    if not allowed_hosts_env:
+        return TransportSecuritySettings(enable_dns_rebinding_protection=False)
+    return TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=[h.strip() for h in allowed_hosts_env.split(",") if h.strip()],
+    )
+
+
+mcp: FastMCP = FastMCP(
+    name="pexels-mcp-server",
+    lifespan=_lifespan,
+    transport_security=_build_transport_security(),
+)
 
 
 _READ_ONLY_ANNOTATIONS = ToolAnnotations(

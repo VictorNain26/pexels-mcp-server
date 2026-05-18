@@ -79,6 +79,7 @@ For the [claude.ai web "custom connectors" UI](https://claude.ai/) you need a pu
 |---|---|---|
 | `PEXELS_API_KEY` | yes | Your Pexels API key. Stays server-side. |
 | `MCP_AUTH_TOKEN` | recommended | Shared Bearer token. When set, the `/mcp` endpoint requires `Authorization: Bearer <token>`. When unset, the endpoint is open to anyone who can reach the host. Generate with `openssl rand -hex 32`. |
+| `MCP_ALLOWED_HOSTS` | no | Comma-separated allowlist for the `Host` header (DNS rebinding protection). Supports the `host:*` wildcard. Unset means accept any Host (Bearer auth is the gate). |
 | `TRANSPORT` | yes (HTTP mode) | Set to `streamable-http`. |
 | `HOST` | no | Default `127.0.0.1`; the Docker image flips it to `0.0.0.0`. |
 | `PORT` | no | Default `8000`. Platforms like Koyeb / Fly inject this automatically. |
