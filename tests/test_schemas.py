@@ -20,7 +20,7 @@ def test_search_photos_defaults() -> None:
     assert params.query == "dogs"
     assert params.page == 1
     assert params.per_page == 15
-    assert params.response_format == ResponseFormat.MARKDOWN
+    assert params.response_format == ResponseFormat.JSON
     assert params.orientation is None
 
 

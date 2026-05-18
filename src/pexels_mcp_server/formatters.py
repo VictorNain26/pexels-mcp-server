@@ -20,102 +20,109 @@ def _safe(value: Any, default: str = "") -> str:
 
 
 def photo_to_json(photo: dict[str, Any]) -> dict[str, Any]:
-    """Project a Pexels photo onto a lean JSON object."""
+    """Project a Pexels photo onto a token-lean JSON object.
+
+    Returns only the high-signal fields an agent typically needs: page URL,
+    alt text, photographer credit, dimensions, and two image URLs (full-res
+    + a medium thumbnail). Discards ``liked``, ``photographer_id``,
+    ``avg_color`` and the four per-orientation src variants that the agent
+    rarely uses.
+    """
     src = photo.get("src") or {}
     return {
         "id": photo.get("id"),
         "alt": photo.get("alt"),
-        "url": photo.get("url"),
+        "page_url": photo.get("url"),
         "photographer": photo.get("photographer"),
         "photographer_url": photo.get("photographer_url"),
-        "avg_color": photo.get("avg_color"),
-        "dimensions": {
-            "width": photo.get("width"),
-            "height": photo.get("height"),
-        },
-        "src": {
-            "original": src.get("original"),
-            "large": src.get("large"),
-            "medium": src.get("medium"),
-            "small": src.get("small"),
-            "portrait": src.get("portrait"),
-            "landscape": src.get("landscape"),
-        },
+        "width": photo.get("width"),
+        "height": photo.get("height"),
+        "image_url": src.get("original"),
+        "thumbnail_url": src.get("medium"),
     }
 
 
 def photo_to_markdown(photo: dict[str, Any]) -> str:
-    """One-paragraph human summary for a photo."""
+    """One-paragraph human summary for a photo. For human inspection only."""
     src = photo.get("src") or {}
-    lines = [
-        f"### Photo #{_safe(photo.get('id'))}",
-        f"- Alt: {_safe(photo.get('alt'), '(no alt text)')}",
-        f"- Photographer: [{_safe(photo.get('photographer'))}]({_safe(photo.get('photographer_url'))})",
-        f"- Dimensions: {_safe(photo.get('width'))}x{_safe(photo.get('height'))}",
-        f"- Page: {_safe(photo.get('url'))}",
-        f"- Original: {_safe(src.get('original'))}",
-    ]
-    return "\n".join(lines)
+    return (
+        f"- **#{_safe(photo.get('id'))}** "
+        f"{_safe(photo.get('alt'), '(no alt)')} "
+        f"by [{_safe(photo.get('photographer'))}]({_safe(photo.get('photographer_url'))}) "
+        f"({_safe(photo.get('width'))}x{_safe(photo.get('height'))}) "
+        f"-> {_safe(src.get('original'))}"
+    )
+
+
+_VIDEO_FILE_KEEP_LIMIT = 3
+
+
+def _best_video_files(files: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Pick the top N files by resolution to keep token usage bounded.
+
+    Pexels often returns 6-12 files per video (HLS + many resolutions). The
+    agent typically only needs one or two streamable URLs.
+    """
+    sorted_files = sorted(
+        files,
+        key=lambda vf: (vf.get("width") or 0) * (vf.get("height") or 0),
+        reverse=True,
+    )
+    return sorted_files[:_VIDEO_FILE_KEEP_LIMIT]
 
 
 def video_to_json(video: dict[str, Any]) -> dict[str, Any]:
-    """Project a Pexels video onto a lean JSON object."""
+    """Project a Pexels video onto a token-lean JSON object.
+
+    Returns high-signal fields and only the top 3 video_files by resolution.
+    Discards ``video_pictures``, ``avg_color``, ``tags``, ``full_res`` and
+    the ``user.id`` field (replaced by the more useful ``uploader_name``).
+    """
     user = video.get("user") or {}
-    video_files = video.get("video_files") or []
+    files = video.get("video_files") or []
+    top_files = _best_video_files(files)
     return {
         "id": video.get("id"),
-        "url": video.get("url"),
+        "page_url": video.get("url"),
         "duration_seconds": video.get("duration"),
-        "dimensions": {
-            "width": video.get("width"),
-            "height": video.get("height"),
-        },
-        "preview_image": video.get("image"),
-        "user": {
-            "id": user.get("id"),
-            "name": user.get("name"),
-            "url": user.get("url"),
-        },
-        "video_files": [
+        "width": video.get("width"),
+        "height": video.get("height"),
+        "preview_image_url": video.get("image"),
+        "uploader_name": user.get("name"),
+        "uploader_url": user.get("url"),
+        "files": [
             {
                 "quality": vf.get("quality"),
                 "file_type": vf.get("file_type"),
                 "width": vf.get("width"),
                 "height": vf.get("height"),
                 "fps": vf.get("fps"),
-                "link": vf.get("link"),
+                "url": vf.get("link"),
             }
-            for vf in video_files
+            for vf in top_files
         ],
+        "total_files_available": len(files),
     }
 
 
 def video_to_markdown(video: dict[str, Any]) -> str:
-    """One-paragraph human summary for a video."""
+    """One-line human summary for a video. For human inspection only."""
     user = video.get("user") or {}
-    files = video.get("video_files") or []
-    qualities = (
-        ", ".join(sorted({str(vf.get("quality")) for vf in files if vf.get("quality")})) or "(none)"
+    return (
+        f"- **#{_safe(video.get('id'))}** "
+        f"{_safe(video.get('duration'))}s "
+        f"{_safe(video.get('width'))}x{_safe(video.get('height'))} "
+        f"by [{_safe(user.get('name'))}]({_safe(user.get('url'))}) "
+        f"-> {_safe(video.get('url'))}"
     )
-    lines = [
-        f"### Video #{_safe(video.get('id'))}",
-        f"- Duration: {_safe(video.get('duration'))}s",
-        f"- Dimensions: {_safe(video.get('width'))}x{_safe(video.get('height'))}",
-        f"- Uploader: [{_safe(user.get('name'))}]({_safe(user.get('url'))})",
-        f"- Page: {_safe(video.get('url'))}",
-        f"- Available qualities: {qualities}",
-        f"- Preview: {_safe(video.get('image'))}",
-    ]
-    return "\n".join(lines)
 
 
 def collection_to_json(collection: dict[str, Any]) -> dict[str, Any]:
-    """Project a Pexels collection onto a lean JSON object."""
+    """Project a Pexels collection onto a token-lean JSON object."""
     return {
         "id": collection.get("id"),
         "title": collection.get("title"),
         "description": collection.get("description"),
-        "private": collection.get("private"),
         "media_count": collection.get("media_count"),
         "photos_count": collection.get("photos_count"),
         "videos_count": collection.get("videos_count"),

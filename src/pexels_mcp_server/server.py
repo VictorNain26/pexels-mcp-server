@@ -1,9 +1,11 @@
-"""FastMCP server exposing the eight Pexels tools.
+"""FastMCP server exposing the Pexels API to MCP-aware AI agents.
 
-Every tool is read-only against the Pexels public REST API. Inputs are validated
-by a Pydantic model from ``schemas.py`` (``ConfigDict(extra="forbid")``) before
-the HTTP call. Outputs are either Markdown (default) or JSON, controlled by the
-``response_format`` argument.
+Every tool is read-only. Outputs default to a JSON envelope shaped for
+direct consumption by an agent (parseable, no per-resolution clutter). All
+responses include a ``rate_limit`` block so the agent can pace itself.
+
+Pexels free tier: 200 requests/hour, 20 000 requests/month. The server
+logs a warning to stderr when fewer than 100 requests remain.
 """
 
 from __future__ import annotations
@@ -94,7 +96,12 @@ def _client(ctx: Context) -> PexelsClient:  # type: ignore[type-arg]
 
 
 def _format_error(exc: Exception) -> str:
-    """Render an exception as a tool-facing error string."""
+    """Render an exception as a tool-facing error string.
+
+    Validation errors list the offending field with the constraint that failed,
+    so the agent can retry with corrected arguments. Pexels errors carry their
+    own actionable text (set PEXELS_API_KEY, reduce request frequency, ...).
+    """
     if isinstance(exc, ValidationError):
         return "Invalid parameters: " + "; ".join(
             f"{'.'.join(str(p) for p in err['loc'])}: {err['msg']}" for err in exc.errors()
@@ -124,34 +131,33 @@ async def pexels_search_photos(
     locale: str | None = None,
     page: int = 1,
     per_page: int = 15,
-    response_format: ResponseFormat = ResponseFormat.MARKDOWN,
+    response_format: ResponseFormat = ResponseFormat.JSON,
 ) -> str:
-    """Search Pexels for free stock photos matching a query.
+    """Search Pexels for free, commercially usable stock photos.
 
-    Use when the user asks for free, royalty-free, attribution-friendly stock
-    photos that can be used commercially.
+    USE WHEN: the user needs an illustration for an article, slide,
+      newsletter, blog post or any UI mockup and gives a topic in plain
+      language. Examples: "mountain landscape at sunrise", "people working
+      from home", "blue abstract texture".
+    DO NOT USE WHEN: the user wants AI-generated images (this tool only
+      returns existing Pexels assets), images of specific real people, or
+      copyrighted material like film stills or product packaging.
 
-    Do NOT use for: photos requiring a model release, exclusive stock photos,
-    AI image generation, or anything that needs user-uploaded photos.
+    Returns a JSON envelope: {total_results, page, per_page, count,
+    has_more, next_page, rate_limit, photos:[{id, alt, page_url,
+    photographer, photographer_url, width, height, image_url,
+    thumbnail_url}]}. Use ``image_url`` for embedding at full resolution
+    and ``thumbnail_url`` for previews. Cite ``photographer`` and
+    ``photographer_url`` when publishing.
 
-    Parameters:
-    - query: search string. Required. 1-200 characters.
-    - orientation: landscape | portrait | square.
-    - size: large (>=24MP) | medium (>=12MP) | small (>=4MP).
-    - color: one of red, orange, yellow, green, turquoise, blue, violet, pink,
-      brown, black, gray, white OR a 6-digit hex without leading "#".
-    - locale: BCP-47 locale, e.g. en-US, fr-FR.
-    - page: 1-based page index.
-    - per_page: 1-80, default 15.
-    - response_format: "markdown" (default) or "json".
+    Filters narrow results aggressively. ``color`` accepts the 12 named
+    colors (red, orange, yellow, green, turquoise, blue, violet, pink,
+    brown, black, gray, white) or a 6-digit hex without '#'. Start with no
+    filter; add filters only if the first page is off-target.
 
-    Returns: a list of photos with photographer attribution. The JSON envelope
-    includes total_results, has_more, next_page and rate_limit info.
-
-    Rate limit: Pexels caps at 200 req/h and 20,000 req/month per key. Tool will
-    surface the remaining quota in the rate_limit envelope.
-
-    Errors are returned as an "Error: ..." string with actionable guidance.
+    ``per_page`` is capped at 80 by Pexels. Default 15 keeps the response
+    under ~3 KB. Paginate via ``page`` rather than raising ``per_page`` if
+    the user wants more.
     """
     try:
         params = SearchPhotosParams(
@@ -180,30 +186,24 @@ async def pexels_search_photos(
 
 @mcp.tool(
     name="pexels_curated_photos",
-    title="Get Curated Pexels Photos",
+    title="Browse Curated Pexels Photos",
     annotations=_READ_ONLY_ANNOTATIONS,
 )
 async def pexels_curated_photos(
     ctx: Context,  # type: ignore[type-arg]
     page: int = 1,
     per_page: int = 15,
-    response_format: ResponseFormat = ResponseFormat.MARKDOWN,
+    response_format: ResponseFormat = ResponseFormat.JSON,
 ) -> str:
-    """Return Pexels' editorial-curated photos. No query needed.
+    """Browse Pexels' editor-curated photo feed (no search query).
 
-    Use when the user wants tasteful, hand-picked stock imagery and is not
-    looking for a specific subject.
+    USE WHEN: the user wants inspiration or "anything tasteful" without a
+      topic in mind. Example: "give me a few hero images we could try".
+    DO NOT USE WHEN: the user named a subject. Use ``pexels_search_photos``
+      so results actually match what they asked for.
 
-    Do NOT use when the user has a search term: call ``pexels_search_photos``
-    instead.
-
-    Parameters:
-    - page: 1-based page index.
-    - per_page: 1-80, default 15.
-    - response_format: "markdown" (default) or "json".
-
-    Returns: same envelope as ``pexels_search_photos`` (photos list + rate
-    limit).
+    Returns the same envelope as ``pexels_search_photos``. Curated feed
+    updates daily, so re-querying ``page=1`` after a day yields new photos.
     """
     try:
         params = CuratedPhotosParams(
@@ -222,24 +222,25 @@ async def pexels_curated_photos(
 
 @mcp.tool(
     name="pexels_get_photo",
-    title="Get a Pexels Photo",
+    title="Get a Pexels Photo by ID",
     annotations=_READ_ONLY_ANNOTATIONS,
 )
 async def pexels_get_photo(
     ctx: Context,  # type: ignore[type-arg]
     photo_id: int,
-    response_format: ResponseFormat = ResponseFormat.MARKDOWN,
+    response_format: ResponseFormat = ResponseFormat.JSON,
 ) -> str:
     """Fetch a single Pexels photo by its numeric id.
 
-    Use when you already have a photo id (from a previous search result, a
-    Pexels page URL, or the user pasted one) and need the full details.
+    USE WHEN: a previous search or a Pexels URL gave you a photo id and you
+      want the canonical record (alt text, dimensions, author, full-res
+      URL). Example: id=28448939 from a search hit, or extracted from
+      "pexels.com/photo/foo-28448939".
+    DO NOT USE WHEN: the user describes the photo in words. Call
+      ``pexels_search_photos`` first.
 
-    Do NOT use to look up a photo by description: search first.
-
-    Parameters:
-    - photo_id: positive integer photo id.
-    - response_format: "markdown" (default) or "json".
+    Returns the same per-photo shape as the search envelope, wrapped in
+    ``{photo: {...}, rate_limit: {...}}``.
     """
     try:
         params = GetPhotoParams(photo_id=photo_id, response_format=response_format)
@@ -262,25 +263,25 @@ async def pexels_search_videos(
     locale: str | None = None,
     page: int = 1,
     per_page: int = 15,
-    response_format: ResponseFormat = ResponseFormat.MARKDOWN,
+    response_format: ResponseFormat = ResponseFormat.JSON,
 ) -> str:
-    """Search Pexels for free stock videos matching a query.
+    """Search Pexels for free, commercially usable stock videos.
 
-    Use when the user asks for royalty-free stock B-roll or video clips.
+    USE WHEN: the user needs B-roll, a hero loop, an animated background,
+      or video filler. Examples: "drone shot of a city skyline at dusk",
+      "macro of coffee being poured", "people walking in slow motion".
+    DO NOT USE WHEN: the user wants AI-generated video, copyrighted clips,
+      or social media footage of specific people.
 
-    Do NOT use for: TV/movie clips, copyrighted content, or video generation.
+    Returns a JSON envelope: {total_results, page, per_page, count,
+    has_more, next_page, rate_limit, videos:[{id, page_url,
+    duration_seconds, width, height, preview_image_url, uploader_name,
+    uploader_url, files:[{quality, width, height, fps, url}],
+    total_files_available}]}. Each video lists only the top 3 files by
+    resolution. Use ``files[0].url`` for the highest quality stream.
 
-    Parameters:
-    - query: search string. Required. 1-200 characters.
-    - orientation: landscape | portrait | square.
-    - size: large (4K) | medium (Full HD) | small (HD).
-    - locale: BCP-47 locale.
-    - page: 1-based page index.
-    - per_page: 1-80, default 15.
-    - response_format: "markdown" (default) or "json".
-
-    Returns: an envelope with the videos list, pagination flags and rate
-    limit.
+    ``size`` buckets: large = 4K, medium = Full HD, small = HD. Start
+    without filters; the search engine ranks relevance and quality first.
     """
     try:
         params = SearchVideosParams(
@@ -307,7 +308,7 @@ async def pexels_search_videos(
 
 @mcp.tool(
     name="pexels_popular_videos",
-    title="Get Popular Pexels Videos",
+    title="Browse Popular Pexels Videos",
     annotations=_READ_ONLY_ANNOTATIONS,
 )
 async def pexels_popular_videos(
@@ -318,21 +319,18 @@ async def pexels_popular_videos(
     max_duration: int | None = None,
     page: int = 1,
     per_page: int = 15,
-    response_format: ResponseFormat = ResponseFormat.MARKDOWN,
+    response_format: ResponseFormat = ResponseFormat.JSON,
 ) -> str:
-    """Return Pexels' currently popular videos, optionally filtered by size or
-    duration.
+    """Browse Pexels' currently trending videos (no search query).
 
-    Use when the user wants trending B-roll without a specific topic.
+    USE WHEN: the user wants trending B-roll without a topic, or asks for
+      videos of at least a given resolution / duration. Examples: "show me
+      some trending clips longer than 30 seconds", "popular 4K loops".
+    DO NOT USE WHEN: the user has a topic. Call ``pexels_search_videos``.
 
-    Do NOT use when the user has a search term: call ``pexels_search_videos``.
-
-    Parameters:
-    - min_width / min_height: minimum pixel dimensions.
-    - min_duration / max_duration: bounds in seconds.
-    - page: 1-based page index.
-    - per_page: 1-80, default 15.
-    - response_format: "markdown" (default) or "json".
+    Same envelope as ``pexels_search_videos``. Combine duration bounds
+    (``min_duration``, ``max_duration`` in seconds) to find clips of a
+    target length without scanning hundreds of results.
     """
     try:
         params = PopularVideosParams(
@@ -359,22 +357,24 @@ async def pexels_popular_videos(
 
 @mcp.tool(
     name="pexels_get_video",
-    title="Get a Pexels Video",
+    title="Get a Pexels Video by ID",
     annotations=_READ_ONLY_ANNOTATIONS,
 )
 async def pexels_get_video(
     ctx: Context,  # type: ignore[type-arg]
     video_id: int,
-    response_format: ResponseFormat = ResponseFormat.MARKDOWN,
+    response_format: ResponseFormat = ResponseFormat.JSON,
 ) -> str:
     """Fetch a single Pexels video by its numeric id.
 
-    Use when you already have a video id and need the full asset details
-    (video_files, qualities, uploader, etc.).
+    USE WHEN: a previous search or a Pexels URL gave you a video id and you
+      want the canonical record (duration, resolution, downloadable file
+      URLs, uploader credit).
+    DO NOT USE WHEN: the user describes the video in words. Call
+      ``pexels_search_videos`` first.
 
-    Parameters:
-    - video_id: positive integer video id.
-    - response_format: "markdown" (default) or "json".
+    Returns ``{video: {...same shape as the videos[] entries...},
+    rate_limit: {...}}``.
     """
     try:
         params = GetVideoParams(video_id=video_id, response_format=response_format)
@@ -393,18 +393,18 @@ async def pexels_list_featured_collections(
     ctx: Context,  # type: ignore[type-arg]
     page: int = 1,
     per_page: int = 15,
-    response_format: ResponseFormat = ResponseFormat.MARKDOWN,
+    response_format: ResponseFormat = ResponseFormat.JSON,
 ) -> str:
-    """List Pexels editor-featured collections (themed bundles of photos and
-    videos).
+    """List Pexels-curated themed collections (mixed photo + video bundles).
 
-    Use when the user wants to browse curated themes (e.g. "abstract", "summer
-    work-from-home").
+    USE WHEN: the user asks for a moodboard around a theme that does not
+      map cleanly to a single keyword. Example: "give me a collection for
+      a Scandinavian minimalist vibe".
+    DO NOT USE WHEN: the user has a concrete query. Search is more direct.
 
-    Parameters:
-    - page: 1-based page index.
-    - per_page: 1-80, default 15.
-    - response_format: "markdown" (default) or "json".
+    Returns ``{collections: [{id, title, description, media_count,
+    photos_count, videos_count}], ...}``. Feed the ``id`` of any collection
+    into ``pexels_get_collection_media`` to fetch its contents.
     """
     try:
         params = FeaturedCollectionsParams(
@@ -423,7 +423,7 @@ async def pexels_list_featured_collections(
 
 @mcp.tool(
     name="pexels_get_collection_media",
-    title="Get Pexels Collection Media",
+    title="Get Pexels Collection Contents",
     annotations=_READ_ONLY_ANNOTATIONS,
 )
 async def pexels_get_collection_media(
@@ -433,20 +433,18 @@ async def pexels_get_collection_media(
     sort: SortOrder | None = None,
     page: int = 1,
     per_page: int = 15,
-    response_format: ResponseFormat = ResponseFormat.MARKDOWN,
+    response_format: ResponseFormat = ResponseFormat.JSON,
 ) -> str:
-    """List the photos and videos inside a Pexels collection.
+    """Read the photos and videos inside a Pexels collection.
 
-    Use after ``pexels_list_featured_collections`` to drill into a specific
-    collection by id.
+    USE WHEN: ``pexels_list_featured_collections`` gave you an id and you
+      want its contents. Optionally pass ``type='photos'`` or
+      ``type='videos'`` to filter.
+    DO NOT USE WHEN: you do not have a collection id. List collections first.
 
-    Parameters:
-    - collection_id: id from the featured collections list. Required.
-    - type: "photos" or "videos" to filter. Defaults to both.
-    - sort: "asc" or "desc" by creation date.
-    - page: 1-based page index.
-    - per_page: 1-80, default 15.
-    - response_format: "markdown" (default) or "json".
+    Returns ``{id, total_results, page, per_page, count, has_more,
+    next_page, rate_limit, photos:[...], videos:[...]}`` with each list
+    using the same per-item shape as the search tools.
     """
     try:
         params = CollectionMediaParams(

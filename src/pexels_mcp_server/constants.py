@@ -7,7 +7,9 @@ from typing import Final
 
 BASE_URL: Final[str] = "https://api.pexels.com"
 PHOTOS_PREFIX: Final[str] = "/v1"
-VIDEOS_PREFIX: Final[str] = "/videos"
+# Pexels deprecated the legacy /videos/* root in favor of /v1/videos/* per
+# https://www.pexels.com/api/documentation/ (Videos section).
+VIDEOS_PREFIX: Final[str] = "/v1/videos"
 COLLECTIONS_PREFIX: Final[str] = "/v1/collections"
 
 DEFAULT_PER_PAGE: Final[int] = 15

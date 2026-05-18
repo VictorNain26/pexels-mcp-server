@@ -157,8 +157,12 @@ class SearchPhotosParams(Pagination):
         description="BCP-47 locale (e.g. en-US, fr-FR). See Pexels docs for the full list.",
     )
     response_format: ResponseFormat = Field(
-        default=ResponseFormat.MARKDOWN,
-        description="Output format. markdown for humans, json for downstream processing.",
+        default=ResponseFormat.JSON,
+        description=(
+            "Output shape. 'json' returns a structured envelope agents can "
+            "parse directly. 'markdown' returns a human-readable bullet list "
+            "for inspection."
+        ),
     )
 
     @field_validator("color")
@@ -179,14 +183,14 @@ class SearchPhotosParams(Pagination):
 class CuratedPhotosParams(Pagination):
     """Inputs for ``pexels_curated_photos``."""
 
-    response_format: ResponseFormat = Field(default=ResponseFormat.MARKDOWN)
+    response_format: ResponseFormat = Field(default=ResponseFormat.JSON)
 
 
 class GetPhotoParams(_StrictModel):
     """Inputs for ``pexels_get_photo``."""
 
     photo_id: int = Field(ge=1, description="Pexels photo id.")
-    response_format: ResponseFormat = Field(default=ResponseFormat.MARKDOWN)
+    response_format: ResponseFormat = Field(default=ResponseFormat.JSON)
 
 
 class SearchVideosParams(Pagination):
@@ -200,7 +204,7 @@ class SearchVideosParams(Pagination):
         max_length=16,
         description="BCP-47 locale (e.g. en-US, fr-FR).",
     )
-    response_format: ResponseFormat = Field(default=ResponseFormat.MARKDOWN)
+    response_format: ResponseFormat = Field(default=ResponseFormat.JSON)
 
 
 class PopularVideosParams(Pagination):
@@ -222,20 +226,20 @@ class PopularVideosParams(Pagination):
         ge=1,
         description="Maximum video duration in seconds.",
     )
-    response_format: ResponseFormat = Field(default=ResponseFormat.MARKDOWN)
+    response_format: ResponseFormat = Field(default=ResponseFormat.JSON)
 
 
 class GetVideoParams(_StrictModel):
     """Inputs for ``pexels_get_video``."""
 
     video_id: int = Field(ge=1, description="Pexels video id.")
-    response_format: ResponseFormat = Field(default=ResponseFormat.MARKDOWN)
+    response_format: ResponseFormat = Field(default=ResponseFormat.JSON)
 
 
 class FeaturedCollectionsParams(Pagination):
     """Inputs for ``pexels_list_featured_collections``."""
 
-    response_format: ResponseFormat = Field(default=ResponseFormat.MARKDOWN)
+    response_format: ResponseFormat = Field(default=ResponseFormat.JSON)
 
 
 class CollectionMediaParams(Pagination):
@@ -250,4 +254,4 @@ class CollectionMediaParams(Pagination):
         default=None,
         description="Sort by creation date (asc or desc).",
     )
-    response_format: ResponseFormat = Field(default=ResponseFormat.MARKDOWN)
+    response_format: ResponseFormat = Field(default=ResponseFormat.JSON)
