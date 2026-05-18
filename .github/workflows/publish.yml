@@ -1,0 +1,64 @@
+# PyPI publish workflow.
+#
+# Disabled until the PyPI project is created manually and Trusted Publishing is
+# configured at https://pypi.org/manage/account/publishing/.
+#
+# To enable:
+#   1. Create the `pexels-mcp` project on PyPI.
+#   2. Add a Trusted Publisher entry for this repo (owner, repo name,
+#      workflow filename = publish.yml, environment = pypi).
+#   3. Uncomment the `on:` block below.
+#   4. Tag a release: `git tag v0.1.0 && git push --tags`.
+
+name: Publish to PyPI
+
+# on:
+#   push:
+#     tags:
+#       - "v*"
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Build distributions
+        run: uv build
+
+      - name: Upload dist artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - name: Download dist artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish to PyPI via Trusted Publishing
+        uses: pypa/gh-action-pypi-publish@release/v1

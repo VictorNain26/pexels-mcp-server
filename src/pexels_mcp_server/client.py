@@ -1,0 +1,268 @@
+"""Async Pexels HTTP client.
+
+Wraps the eight Pexels REST endpoints we expose as tools. Public methods all
+return a ``(payload, rate_limit)`` tuple so the tool layer can stitch the
+rate-limit envelope onto every response.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+from datetime import datetime, timezone
+from typing import Any
+
+import httpx
+
+from .constants import (
+    BASE_URL,
+    COLLECTIONS_PREFIX,
+    HTTP_TIMEOUT_SECONDS,
+    PHOTOS_PREFIX,
+    RETRY_BACKOFF_SECONDS,
+    USER_AGENT,
+    VIDEOS_PREFIX,
+)
+
+logger = logging.getLogger("pexels_mcp_server.client")
+
+
+class PexelsAuthError(RuntimeError):
+    """Raised when the API rejects the configured key."""
+
+
+class PexelsRateLimitError(RuntimeError):
+    """Raised when the API returns HTTP 429."""
+
+    def __init__(self, reset_at: str | None) -> None:
+        suffix = f" Resets at {reset_at}." if reset_at else ""
+        super().__init__(f"Pexels rate limit exceeded.{suffix} Reduce request frequency.")
+        self.reset_at = reset_at
+
+
+class PexelsAPIError(RuntimeError):
+    """Raised for any other non-success response from Pexels."""
+
+    def __init__(self, status_code: int, message: str) -> None:
+        super().__init__(f"Pexels API error {status_code}: {message}")
+        self.status_code = status_code
+
+
+def _parse_rate_limit(headers: httpx.Headers) -> dict[str, Any]:
+    """Parse the ``X-Ratelimit-*`` headers into a JSON-friendly dict."""
+    limit = headers.get("X-Ratelimit-Limit")
+    remaining = headers.get("X-Ratelimit-Remaining")
+    reset = headers.get("X-Ratelimit-Reset")
+    result: dict[str, Any] = {}
+    if limit is not None:
+        try:
+            result["limit"] = int(limit)
+        except ValueError:
+            result["limit"] = limit
+    if remaining is not None:
+        try:
+            result["remaining"] = int(remaining)
+        except ValueError:
+            result["remaining"] = remaining
+    if reset is not None:
+        try:
+            ts = int(reset)
+            result["reset"] = datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+            result["reset_epoch"] = ts
+        except ValueError:
+            result["reset"] = reset
+    return result
+
+
+def _drop_none(params: dict[str, Any]) -> dict[str, Any]:
+    """Strip keys whose value is None so we do not send empty query strings."""
+    return {k: v for k, v in params.items() if v is not None}
+
+
+class PexelsClient:
+    """Thin async wrapper around the Pexels REST API."""
+
+    def __init__(self, api_key: str, *, timeout: float = HTTP_TIMEOUT_SECONDS) -> None:
+        if not api_key or not api_key.strip():
+            raise PexelsAuthError(
+                "Pexels API key is invalid or missing. "
+                "Set PEXELS_API_KEY env var. Get a key at https://www.pexels.com/api/"
+            )
+        self._client = httpx.AsyncClient(
+            base_url=BASE_URL,
+            headers={
+                "Authorization": api_key.strip(),
+                "User-Agent": USER_AGENT,
+            },
+            timeout=timeout,
+        )
+
+    async def aclose(self) -> None:
+        """Close the underlying httpx client."""
+        await self._client.aclose()
+
+    async def __aenter__(self) -> PexelsClient:
+        return self
+
+    async def __aexit__(self, *_: object) -> None:
+        await self.aclose()
+
+    async def _request(
+        self,
+        path: str,
+        params: dict[str, Any] | None = None,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Issue a GET request with one retry on 5xx errors."""
+        query = _drop_none(params or {})
+        last_exc: Exception | None = None
+        for attempt in (1, 2):
+            try:
+                response = await self._client.get(path, params=query)
+            except httpx.HTTPError as exc:
+                last_exc = exc
+                if attempt == 1:
+                    logger.warning("Pexels request to %s failed (%s). Retrying once.", path, exc)
+                    await asyncio.sleep(RETRY_BACKOFF_SECONDS)
+                    continue
+                raise PexelsAPIError(0, f"network error: {exc}") from exc
+
+            rate_limit = _parse_rate_limit(response.headers)
+            remaining = rate_limit.get("remaining")
+            if isinstance(remaining, int) and remaining < 100:
+                logger.warning(
+                    "Pexels rate limit low: %s requests left (reset %s)",
+                    remaining,
+                    rate_limit.get("reset"),
+                )
+
+            if response.status_code == httpx.codes.OK:
+                return response.json(), rate_limit
+            if response.status_code in (httpx.codes.UNAUTHORIZED, httpx.codes.FORBIDDEN):
+                raise PexelsAuthError(
+                    "Pexels API key is invalid or missing. "
+                    "Set PEXELS_API_KEY env var. Get a key at https://www.pexels.com/api/"
+                )
+            if response.status_code == httpx.codes.TOO_MANY_REQUESTS:
+                raise PexelsRateLimitError(rate_limit.get("reset"))
+            if 500 <= response.status_code < 600 and attempt == 1:
+                logger.warning("Pexels returned %s. Retrying once.", response.status_code)
+                await asyncio.sleep(RETRY_BACKOFF_SECONDS)
+                continue
+            raise PexelsAPIError(response.status_code, response.text[:300])
+
+        raise PexelsAPIError(0, f"retry exhausted: {last_exc}")
+
+    async def search_photos(
+        self,
+        *,
+        query: str,
+        orientation: str | None = None,
+        size: str | None = None,
+        color: str | None = None,
+        locale: str | None = None,
+        page: int = 1,
+        per_page: int = 15,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        return await self._request(
+            f"{PHOTOS_PREFIX}/search",
+            {
+                "query": query,
+                "orientation": orientation,
+                "size": size,
+                "color": color,
+                "locale": locale,
+                "page": page,
+                "per_page": per_page,
+            },
+        )
+
+    async def curated_photos(
+        self,
+        *,
+        page: int = 1,
+        per_page: int = 15,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        return await self._request(
+            f"{PHOTOS_PREFIX}/curated",
+            {"page": page, "per_page": per_page},
+        )
+
+    async def get_photo(self, photo_id: int) -> tuple[dict[str, Any], dict[str, Any]]:
+        return await self._request(f"{PHOTOS_PREFIX}/photos/{photo_id}")
+
+    async def search_videos(
+        self,
+        *,
+        query: str,
+        orientation: str | None = None,
+        size: str | None = None,
+        locale: str | None = None,
+        page: int = 1,
+        per_page: int = 15,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        return await self._request(
+            f"{VIDEOS_PREFIX}/search",
+            {
+                "query": query,
+                "orientation": orientation,
+                "size": size,
+                "locale": locale,
+                "page": page,
+                "per_page": per_page,
+            },
+        )
+
+    async def popular_videos(
+        self,
+        *,
+        min_width: int | None = None,
+        min_height: int | None = None,
+        min_duration: int | None = None,
+        max_duration: int | None = None,
+        page: int = 1,
+        per_page: int = 15,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        return await self._request(
+            f"{VIDEOS_PREFIX}/popular",
+            {
+                "min_width": min_width,
+                "min_height": min_height,
+                "min_duration": min_duration,
+                "max_duration": max_duration,
+                "page": page,
+                "per_page": per_page,
+            },
+        )
+
+    async def get_video(self, video_id: int) -> tuple[dict[str, Any], dict[str, Any]]:
+        return await self._request(f"{VIDEOS_PREFIX}/videos/{video_id}")
+
+    async def list_featured_collections(
+        self,
+        *,
+        page: int = 1,
+        per_page: int = 15,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        return await self._request(
+            f"{COLLECTIONS_PREFIX}/featured",
+            {"page": page, "per_page": per_page},
+        )
+
+    async def get_collection_media(
+        self,
+        *,
+        collection_id: str,
+        type: str | None = None,
+        sort: str | None = None,
+        page: int = 1,
+        per_page: int = 15,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        return await self._request(
+            f"{COLLECTIONS_PREFIX}/{collection_id}",
+            {
+                "type": type,
+                "sort": sort,
+                "page": page,
+                "per_page": per_page,
+            },
+        )
