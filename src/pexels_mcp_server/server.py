@@ -70,17 +70,50 @@ class AppContext:
 async def _lifespan(_server: FastMCP) -> AsyncIterator[AppContext]:
     """Boot a single ``PexelsClient`` for the server lifetime.
 
-    Missing-key validation lives in ``PexelsClient.__init__`` and in the CLI
-    entrypoint (``__main__.main``) so the FastMCP task group never has to
-    surface a wrapped ``PexelsAuthError``.
+    The client never stores a Pexels key. The effective key is resolved per
+    tool call via ``_resolve_api_key`` (HTTP header first, env var fallback).
     """
-    client = PexelsClient(api_key=os.environ.get("PEXELS_API_KEY", ""))
+    client = PexelsClient()
     logger.info("Pexels client ready (transport managed by FastMCP).")
     try:
         yield AppContext(client=client)
     finally:
         await client.aclose()
         logger.info("Pexels client closed.")
+
+
+def _resolve_api_key(ctx: Context) -> str | None:  # type: ignore[type-arg]
+    """Resolve the Pexels API key for the current call.
+
+    Order of precedence:
+
+    1. The ``X-Pexels-Api-Key`` header on the live HTTP request (read straight
+       from the Starlette ``Request`` exposed by FastMCP). This is the
+       canonical source in HTTP / Streamable-HTTP mode, because FastMCP spawns
+       its session worker at initialize time and would freeze any ContextVar
+       set later by ASGI middleware.
+    2. The ``pexels_key_ctx`` ContextVar populated by ``pexels_key_middleware``
+       in ``stateless_http`` deployments (each request runs in its own task,
+       so the var propagates).
+    3. The ``PEXELS_API_KEY`` env var (stdio transport, local config).
+    """
+    request = getattr(getattr(ctx, "request_context", None), "request", None)
+    if request is not None:
+        header_val = ""
+        headers = getattr(request, "headers", None)
+        if headers is not None:
+            header_val = str(headers.get("x-pexels-api-key", "")).strip()
+        if header_val:
+            return header_val
+
+    # Lazy import keeps stdio boot light.
+    from .transport import pexels_key_ctx
+
+    cv_val = pexels_key_ctx.get()
+    if cv_val:
+        return cv_val
+
+    return os.environ.get("PEXELS_API_KEY", "").strip() or None
 
 
 def _build_transport_security() -> TransportSecuritySettings:
@@ -199,6 +232,7 @@ async def pexels_search_photos(
             response_format=response_format,
         )
         payload, rate_limit = await _client(ctx).search_photos(
+            api_key=_resolve_api_key(ctx),
             query=params.query,
             orientation=params.orientation.value if params.orientation else None,
             size=params.size.value if params.size else None,
@@ -240,6 +274,7 @@ async def pexels_curated_photos(
             response_format=response_format,
         )
         payload, rate_limit = await _client(ctx).curated_photos(
+            api_key=_resolve_api_key(ctx),
             page=params.page,
             per_page=params.per_page,
         )
@@ -272,7 +307,9 @@ async def pexels_get_photo(
     """
     try:
         params = GetPhotoParams(photo_id=photo_id, response_format=response_format)
-        payload, rate_limit = await _client(ctx).get_photo(params.photo_id)
+        payload, rate_limit = await _client(ctx).get_photo(
+            params.photo_id, api_key=_resolve_api_key(ctx)
+        )
         return format_single_photo(payload, rate_limit, params.response_format.value)
     except Exception as exc:
         return _format_error(exc)
@@ -322,6 +359,7 @@ async def pexels_search_videos(
             response_format=response_format,
         )
         payload, rate_limit = await _client(ctx).search_videos(
+            api_key=_resolve_api_key(ctx),
             query=params.query,
             orientation=params.orientation.value if params.orientation else None,
             size=params.size.value if params.size else None,
@@ -371,6 +409,7 @@ async def pexels_popular_videos(
             response_format=response_format,
         )
         payload, rate_limit = await _client(ctx).popular_videos(
+            api_key=_resolve_api_key(ctx),
             min_width=params.min_width,
             min_height=params.min_height,
             min_duration=params.min_duration,
@@ -406,7 +445,9 @@ async def pexels_get_video(
     """
     try:
         params = GetVideoParams(video_id=video_id, response_format=response_format)
-        payload, rate_limit = await _client(ctx).get_video(params.video_id)
+        payload, rate_limit = await _client(ctx).get_video(
+            params.video_id, api_key=_resolve_api_key(ctx)
+        )
         return format_single_video(payload, rate_limit, params.response_format.value)
     except Exception as exc:
         return _format_error(exc)
@@ -441,6 +482,7 @@ async def pexels_list_featured_collections(
             response_format=response_format,
         )
         payload, rate_limit = await _client(ctx).list_featured_collections(
+            api_key=_resolve_api_key(ctx),
             page=params.page,
             per_page=params.per_page,
         )
@@ -484,6 +526,7 @@ async def pexels_get_collection_media(
             response_format=response_format,
         )
         payload, rate_limit = await _client(ctx).get_collection_media(
+            api_key=_resolve_api_key(ctx),
             collection_id=params.collection_id,
             type=params.type.value if params.type else None,
             sort=params.sort.value if params.sort else None,

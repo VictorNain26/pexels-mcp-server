@@ -1,13 +1,19 @@
 """ASGI middleware used by the Streamable HTTP transport.
 
-The MCP protocol does not mandate Bearer auth on the transport, but a public
-HTTP deployment without any gate gives anyone who guesses the URL free reign
-over the operator's Pexels quota. This middleware adds a minimal shared-secret
-Bearer check and a ``/healthz`` liveness probe so platforms like Koyeb can
-verify the container is ready.
+Three things live here:
 
-The middleware is a no-op when ``MCP_AUTH_TOKEN`` is unset, so the stdio
-transport and local dev deployments keep their zero-config feel.
+1. ``healthz_middleware`` - short-circuit ``GET /healthz`` so platform liveness
+   probes never hit the MCP routes (which would 405 / 401).
+2. ``bearer_auth_middleware`` - shared-secret Bearer gate driven by the
+   ``MCP_AUTH_TOKEN`` env var. Protects the host's CPU / bandwidth from random
+   internet traffic.
+3. ``pexels_key_middleware`` - extracts the per-request ``X-Pexels-Api-Key``
+   header into a ``ContextVar`` so the tool handlers can resolve the caller's
+   own Pexels key without it ever being part of the server's static config.
+
+The stdio transport bypasses all three and keeps using the ``PEXELS_API_KEY``
+env var as the only source of truth, which matches how local clients
+(Claude Desktop, Claude Code) inject the key today.
 """
 
 from __future__ import annotations
@@ -15,6 +21,7 @@ from __future__ import annotations
 import hmac
 import logging
 from collections.abc import Awaitable, Callable
+from contextvars import ContextVar
 from typing import Any
 
 logger = logging.getLogger("pexels_mcp_server.transport")
@@ -23,6 +30,12 @@ ASGIScope = dict[str, Any]
 ASGIReceive = Callable[[], Awaitable[dict[str, Any]]]
 ASGISend = Callable[[dict[str, Any]], Awaitable[None]]
 ASGIApp = Callable[[ASGIScope, ASGIReceive, ASGISend], Awaitable[None]]
+
+
+# Per-request Pexels API key. Populated by ``pexels_key_middleware`` from the
+# ``X-Pexels-Api-Key`` request header. Reset to ``None`` outside an HTTP
+# request so the stdio transport falls back to the env var.
+pexels_key_ctx: ContextVar[str | None] = ContextVar("pexels_api_key", default=None)
 
 
 async def _send_text(send: ASGISend, status: int, body: bytes) -> None:
@@ -60,6 +73,41 @@ def healthz_middleware(app: ASGIApp) -> ASGIApp:
             await _send_text(send, 200, b"ok")
             return
         await app(scope, receive, send)
+
+    return wrapped
+
+
+def pexels_key_middleware(app: ASGIApp) -> ASGIApp:
+    """Extract ``X-Pexels-Api-Key`` from the request headers into a ContextVar.
+
+    The Pexels key never sits in the server's static config: each caller has
+    to send their own key with every request. This middleware reads the
+    header once per request and lets the tool handlers pick it up from the
+    contextvar; the value is reset right after the downstream app runs so
+    nothing leaks across requests (uvicorn already isolates contextvars per
+    task, but resetting is cheap and defensive).
+    """
+
+    async def wrapped(scope: ASGIScope, receive: ASGIReceive, send: ASGISend) -> None:
+        if scope.get("type") != "http":
+            await app(scope, receive, send)
+            return
+        headers: list[tuple[bytes, bytes]] = scope.get("headers", [])
+        key_value: str | None = None
+        for name, value in headers:
+            if name.lower() == b"x-pexels-api-key":
+                key_value = value.decode("latin-1", errors="ignore").strip() or None
+                break
+        token = pexels_key_ctx.set(key_value)
+        logger.debug(
+            "pexels_key_middleware: %s key on %s",
+            "set" if key_value else "no",
+            scope.get("path"),
+        )
+        try:
+            await app(scope, receive, send)
+        finally:
+            pexels_key_ctx.reset(token)
 
     return wrapped
 

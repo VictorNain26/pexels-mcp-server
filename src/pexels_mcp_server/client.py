@@ -1,8 +1,12 @@
 """Async Pexels HTTP client.
 
-Wraps the eight Pexels REST endpoints we expose as tools. Public methods all
-return a ``(payload, rate_limit)`` tuple so the tool layer can stitch the
-rate-limit envelope onto every response.
+Wraps the Pexels REST endpoints we expose as tools. Each public method takes
+an ``api_key`` argument resolved by the caller (``server.py`` reads the
+per-request ``X-Pexels-Api-Key`` header in HTTP mode or the ``PEXELS_API_KEY``
+env var in stdio mode). The client itself never stores a key.
+
+All methods return a ``(payload, rate_limit)`` tuple so the tool layer can
+stitch the rate-limit envelope onto every response.
 """
 
 from __future__ import annotations
@@ -28,7 +32,7 @@ logger = logging.getLogger("pexels_mcp_server.client")
 
 
 class PexelsAuthError(RuntimeError):
-    """Raised when the API rejects the configured key."""
+    """Raised when the API key is missing or rejected by Pexels."""
 
 
 class PexelsRateLimitError(RuntimeError):
@@ -46,6 +50,14 @@ class PexelsAPIError(RuntimeError):
     def __init__(self, status_code: int, message: str) -> None:
         super().__init__(f"Pexels API error {status_code}: {message}")
         self.status_code = status_code
+
+
+_MISSING_KEY_MESSAGE = (
+    "Pexels API key is missing. "
+    "Send it as the 'X-Pexels-Api-Key' header on the MCP request "
+    "(HTTP transport) or set the PEXELS_API_KEY env var (stdio transport). "
+    "Get a key at https://www.pexels.com/api/"
+)
 
 
 def _parse_rate_limit(headers: httpx.Headers) -> dict[str, Any]:
@@ -80,20 +92,18 @@ def _drop_none(params: dict[str, Any]) -> dict[str, Any]:
 
 
 class PexelsClient:
-    """Thin async wrapper around the Pexels REST API."""
+    """Thin async wrapper around the Pexels REST API.
 
-    def __init__(self, api_key: str, *, timeout: float = HTTP_TIMEOUT_SECONDS) -> None:
-        if not api_key or not api_key.strip():
-            raise PexelsAuthError(
-                "Pexels API key is invalid or missing. "
-                "Set PEXELS_API_KEY env var. Get a key at https://www.pexels.com/api/"
-            )
+    The client maintains a single ``httpx.AsyncClient`` (connection pool,
+    HTTP/2 multiplexing) and signs each request with whatever ``api_key`` the
+    caller supplies. There is no stored default key: callers must resolve the
+    effective key themselves before invoking a method.
+    """
+
+    def __init__(self, *, timeout: float = HTTP_TIMEOUT_SECONDS) -> None:
         self._client = httpx.AsyncClient(
             base_url=BASE_URL,
-            headers={
-                "Authorization": api_key.strip(),
-                "User-Agent": USER_AGENT,
-            },
+            headers={"User-Agent": USER_AGENT},
             timeout=timeout,
         )
 
@@ -107,17 +117,26 @@ class PexelsClient:
     async def __aexit__(self, *_: object) -> None:
         await self.aclose()
 
+    @staticmethod
+    def _require_key(api_key: str | None) -> str:
+        if not api_key or not api_key.strip():
+            raise PexelsAuthError(_MISSING_KEY_MESSAGE)
+        return api_key.strip()
+
     async def _request(
         self,
         path: str,
-        params: dict[str, Any] | None = None,
+        params: dict[str, Any] | None,
+        *,
+        api_key: str,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         """Issue a GET request with one retry on 5xx errors."""
         query = _drop_none(params or {})
+        headers = {"Authorization": api_key}
         last_exc: Exception | None = None
         for attempt in (1, 2):
             try:
-                response = await self._client.get(path, params=query)
+                response = await self._client.get(path, params=query, headers=headers)
             except httpx.HTTPError as exc:
                 last_exc = exc
                 if attempt == 1:
@@ -138,10 +157,7 @@ class PexelsClient:
             if response.status_code == httpx.codes.OK:
                 return response.json(), rate_limit
             if response.status_code in (httpx.codes.UNAUTHORIZED, httpx.codes.FORBIDDEN):
-                raise PexelsAuthError(
-                    "Pexels API key is invalid or missing. "
-                    "Set PEXELS_API_KEY env var. Get a key at https://www.pexels.com/api/"
-                )
+                raise PexelsAuthError(_MISSING_KEY_MESSAGE)
             if response.status_code == httpx.codes.TOO_MANY_REQUESTS:
                 raise PexelsRateLimitError(rate_limit.get("reset"))
             if 500 <= response.status_code < 600 and attempt == 1:
@@ -155,6 +171,7 @@ class PexelsClient:
     async def search_photos(
         self,
         *,
+        api_key: str | None,
         query: str,
         orientation: str | None = None,
         size: str | None = None,
@@ -174,25 +191,35 @@ class PexelsClient:
                 "page": page,
                 "per_page": per_page,
             },
+            api_key=self._require_key(api_key),
         )
 
     async def curated_photos(
         self,
         *,
+        api_key: str | None,
         page: int = 1,
         per_page: int = 15,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         return await self._request(
             f"{PHOTOS_PREFIX}/curated",
             {"page": page, "per_page": per_page},
+            api_key=self._require_key(api_key),
         )
 
-    async def get_photo(self, photo_id: int) -> tuple[dict[str, Any], dict[str, Any]]:
-        return await self._request(f"{PHOTOS_PREFIX}/photos/{photo_id}")
+    async def get_photo(
+        self, photo_id: int, *, api_key: str | None
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        return await self._request(
+            f"{PHOTOS_PREFIX}/photos/{photo_id}",
+            None,
+            api_key=self._require_key(api_key),
+        )
 
     async def search_videos(
         self,
         *,
+        api_key: str | None,
         query: str,
         orientation: str | None = None,
         size: str | None = None,
@@ -210,11 +237,13 @@ class PexelsClient:
                 "page": page,
                 "per_page": per_page,
             },
+            api_key=self._require_key(api_key),
         )
 
     async def popular_videos(
         self,
         *,
+        api_key: str | None,
         min_width: int | None = None,
         min_height: int | None = None,
         min_duration: int | None = None,
@@ -232,28 +261,38 @@ class PexelsClient:
                 "page": page,
                 "per_page": per_page,
             },
+            api_key=self._require_key(api_key),
         )
 
-    async def get_video(self, video_id: int) -> tuple[dict[str, Any], dict[str, Any]]:
+    async def get_video(
+        self, video_id: int, *, api_key: str | None
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
         # Pexels exposes the single-video endpoint at /videos/videos/:id. The
         # repeated "videos" segment is intentional per the official docs:
         # https://www.pexels.com/api/documentation/#videos-show
-        return await self._request(f"{VIDEOS_PREFIX}/videos/{video_id}")
+        return await self._request(
+            f"{VIDEOS_PREFIX}/videos/{video_id}",
+            None,
+            api_key=self._require_key(api_key),
+        )
 
     async def list_featured_collections(
         self,
         *,
+        api_key: str | None,
         page: int = 1,
         per_page: int = 15,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         return await self._request(
             f"{COLLECTIONS_PREFIX}/featured",
             {"page": page, "per_page": per_page},
+            api_key=self._require_key(api_key),
         )
 
     async def get_collection_media(
         self,
         *,
+        api_key: str | None,
         collection_id: str,
         type: str | None = None,
         sort: str | None = None,
@@ -268,4 +307,5 @@ class PexelsClient:
                 "page": page,
                 "per_page": per_page,
             },
+            api_key=self._require_key(api_key),
         )

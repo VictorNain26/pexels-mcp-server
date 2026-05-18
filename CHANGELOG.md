@@ -10,6 +10,12 @@ All notable changes to this project are documented here. Format follows [Keep a 
 - CI: concurrency group so superseded runs cancel themselves.
 - `py.typed` marker so downstream consumers respect the inline type annotations.
 - `.editorconfig` for editor-agnostic indentation rules.
+- Per-request Pexels API key via the `X-Pexels-Api-Key` HTTP header. Hosted deployments no longer need (and should not have) a server-wide `PEXELS_API_KEY`; each caller supplies their own key and pays their own quota.
+- ASGI middleware `pexels_key_middleware` that extracts the header into a `ContextVar`; tool handlers resolve the effective key per call.
+
+### Changed
+- **Breaking**: `PexelsClient.__init__` no longer takes `api_key`. Every public method now accepts `api_key=` as a required keyword. Stdio callers continue to set `PEXELS_API_KEY` in the environment; the server resolves the env var on every call.
+- **Breaking**: `__main__.main` no longer fails fast when `PEXELS_API_KEY` is unset. The server boots and tools return an actionable auth error until a key is supplied via env (stdio) or header (HTTP).
 
 ## [0.2.0] - 2026-05-19
 

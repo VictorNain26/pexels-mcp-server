@@ -71,19 +71,28 @@ Same pattern: configure a stdio server with `command=uvx`, the `--from git+...` 
 
 ## Hosted deployment (Streamable HTTP)
 
-For the [claude.ai web "custom connectors" UI](https://claude.ai/) you need a public HTTPS endpoint. The server speaks Streamable HTTP and ships with a `Dockerfile` + Bearer auth middleware.
+For the [claude.ai web "custom connectors" UI](https://claude.ai/) you need a public HTTPS endpoint. The server speaks Streamable HTTP and ships with a `Dockerfile`, Bearer auth middleware and a per-request Pexels-key extractor.
 
-### Configuration
+The hosted deployment **does not hold a default Pexels API key**. Every caller is required to send their own via the `X-Pexels-Api-Key` request header. The server forwards the header to Pexels and never persists it. This keeps the deployment multi-tenant safe: each user pays their own Pexels quota.
+
+### Per-request headers
+
+| Header | Required | Purpose |
+|---|---|---|
+| `Authorization: Bearer <MCP_AUTH_TOKEN>` | when `MCP_AUTH_TOKEN` is set on the server | Resource gate for the host (prevents random internet traffic). |
+| `X-Pexels-Api-Key: <user_key>` | yes | The caller's own Pexels key. Used to authenticate the upstream Pexels REST calls. Get one at <https://www.pexels.com/api/>. |
+
+### Server environment variables
 
 | Variable | Required | Description |
 |---|---|---|
-| `PEXELS_API_KEY` | yes | Your Pexels API key. Stays server-side. |
 | `MCP_AUTH_TOKEN` | recommended | Shared Bearer token. When set, the `/mcp` endpoint requires `Authorization: Bearer <token>`. When unset, the endpoint is open to anyone who can reach the host. Generate with `openssl rand -hex 32`. |
 | `MCP_ALLOWED_HOSTS` | no | Comma-separated allowlist for the `Host` header (DNS rebinding protection). Supports the `host:*` wildcard. Unset means accept any Host (Bearer auth is the gate). |
 | `TRANSPORT` | yes (HTTP mode) | Set to `streamable-http`. |
 | `HOST` | no | Default `127.0.0.1`; the Docker image flips it to `0.0.0.0`. |
 | `PORT` | no | Default `8000`. Platforms like Koyeb / Fly inject this automatically. |
 | `LOG_LEVEL` | no | Default `INFO`. |
+| `PEXELS_API_KEY` | no | Server-side fallback key for callers who omit the `X-Pexels-Api-Key` header. Leave unset for multi-tenant deployments. |
 
 ### Health probe
 
@@ -101,13 +110,16 @@ The repo ships a multi-stage `Dockerfile` (Python 3.12 slim, runs as the `app` u
 Local dry-run:
 
 ```bash
-PEXELS_API_KEY=... MCP_AUTH_TOKEN=test123 TRANSPORT=streamable-http HOST=0.0.0.0 \
+MCP_AUTH_TOKEN=test123 TRANSPORT=streamable-http HOST=0.0.0.0 \
   uv run pexels-mcp-server
 # in another terminal
 curl -s http://localhost:8000/healthz
-curl -s -H 'Authorization: Bearer test123' http://localhost:8000/mcp -X POST \
-  -H 'Content-Type: application/json' \
-  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}'
+curl -s -H 'Authorization: Bearer test123' \
+     -H 'X-Pexels-Api-Key: your_pexels_key' \
+     -H 'Content-Type: application/json' \
+     -H 'Accept: application/json,text/event-stream' \
+     -X POST http://localhost:8000/mcp \
+     -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"smoke","version":"0"}}}'
 ```
 
 ## How a response looks
