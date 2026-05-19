@@ -18,7 +18,7 @@ def test_search_photos_defaults() -> None:
     params = SearchPhotosParams(query="dogs")
     assert params.query == "dogs"
     assert params.page == 1
-    assert params.per_page == 5
+    assert params.per_page == 15
     assert params.response_format == ResponseFormat.JSON
     assert params.orientation is None
 
@@ -131,7 +131,7 @@ def test_page_null_is_coerced_to_default() -> None:
     strict validation on null too."""
     params = SearchPhotosParams(query="x", page=None, per_page=None)  # type: ignore[arg-type]
     assert params.page == 1
-    assert params.per_page == 5
+    assert params.per_page == 15
 
 
 def test_orientation_null_remains_none() -> None:

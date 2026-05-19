@@ -369,7 +369,7 @@ async def pexels_search_photos(
     min_height: int | None = None,
     aspect_ratio: str | None = None,
     page: int = 1,
-    per_page: int = 5,
+    per_page: int = 15,
     response_format: ResponseFormat = ResponseFormat.JSON,
 ) -> str:
     """Search free, commercially-usable stock photos on Pexels.
@@ -469,7 +469,7 @@ async def pexels_search_videos(
     min_height: int | None = None,
     aspect_ratio: str | None = None,
     page: int = 1,
-    per_page: int = 5,
+    per_page: int = 15,
     response_format: ResponseFormat = ResponseFormat.JSON,
 ) -> str:
     """Search free, commercially-usable stock videos on Pexels.
@@ -553,7 +553,7 @@ async def pexels_get_collection_media(
     min_height: int | None = None,
     aspect_ratio: str | None = None,
     page: int = 1,
-    per_page: int = 5,
+    per_page: int = 15,
     response_format: ResponseFormat = ResponseFormat.JSON,
 ) -> str:
     """Read the photos + videos inside a Pexels collection.
