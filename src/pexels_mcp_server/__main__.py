@@ -135,7 +135,6 @@ def main() -> None:
     from typing import cast
 
     import uvicorn
-    from starlette.routing import Route
 
     from .transport import (
         ASGIApp,
@@ -143,22 +142,15 @@ def main() -> None:
         pexels_key_middleware,
     )
 
-    # FastMCP returns a Starlette app already wired with the OAuth routes
-    # (/authorize, /token, /register, /.well-known/oauth-authorization-server),
-    # the RFC 9728 Protected Resource Metadata (/.well-known/oauth-protected-resource)
-    # and Bearer validation in front of /mcp. We append our own /login and
-    # /login/callback routes for the human passcode step.
+    # FastMCP returns a Starlette app already wired with everything we need:
+    # - the OAuth routes (/authorize, /token, /register,
+    #   /.well-known/oauth-authorization-server)
+    # - the RFC 9728 Protected Resource Metadata
+    #   (/.well-known/oauth-protected-resource)
+    # - the Bearer validator wrapping /mcp
+    # - the /login and /login/callback routes we registered with
+    #   ``@mcp.custom_route`` over in ``server.py``
     starlette_app = mcp.streamable_http_app()
-    starlette_app.routes.append(
-        Route("/login", endpoint=oauth_provider.render_login_page, methods=["GET"])
-    )
-    starlette_app.routes.append(
-        Route(
-            "/login/callback",
-            endpoint=oauth_provider.handle_login_callback,
-            methods=["POST"],
-        )
-    )
 
     # Wrap with the X-Pexels-Api-Key extractor and the platform healthz
     # short-circuit. The outermost wrap runs first per ASGI semantics.

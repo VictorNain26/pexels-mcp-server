@@ -16,7 +16,6 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 
-from mcp.server.auth.provider import ProviderTokenVerifier
 from mcp.server.auth.settings import AuthSettings, ClientRegistrationOptions
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
@@ -116,9 +115,7 @@ def _resolve_api_key(ctx: Context) -> str | None:  # type: ignore[type-arg]
     return os.environ.get("PEXELS_API_KEY", "").strip() or None
 
 
-def _build_oauth_settings() -> (
-    tuple[PexelsOAuthProvider, ProviderTokenVerifier, AuthSettings] | None
-):
+def _build_oauth_settings() -> tuple[PexelsOAuthProvider, AuthSettings] | None:
     """Resolve OAuth wiring from the environment.
 
     The HTTP transport requires OAuth; stdio leaves it off (local clients
@@ -127,6 +124,12 @@ def _build_oauth_settings() -> (
     aborts any boot path that tries to run the server unauthenticated,
     including alternate entrypoints like ``uvicorn pexels_mcp_server.server:mcp``
     that bypass ``__main__`` (and therefore bypass ``_validate_http_env``).
+
+    We return the provider and the ``AuthSettings`` only — the SDK derives
+    the token verifier from the provider internally via
+    ``ProviderTokenVerifier(auth_server_provider)``. Passing
+    ``token_verifier=`` explicitly alongside ``auth_server_provider`` is a
+    ``ValueError`` per the SDK contract.
     """
     transport = os.environ.get("TRANSPORT", "stdio").strip().lower()
     if transport != "streamable-http":
@@ -162,7 +165,7 @@ def _build_oauth_settings() -> (
             default_scopes=[MCP_SCOPE],
         ),
     )
-    return provider, ProviderTokenVerifier(provider), auth
+    return provider, auth
 
 
 _oauth_settings = _build_oauth_settings()
@@ -204,7 +207,7 @@ def _build_transport_security() -> TransportSecuritySettings:
 # scaled hosted deployments where any instance must be able to handle any
 # request without sticky routing.
 if _oauth_settings is not None:
-    _auth_provider, _token_verifier, _auth_settings = _oauth_settings
+    _auth_provider, _auth_settings = _oauth_settings
     mcp: FastMCP = FastMCP(
         name="pexels-mcp-server",
         lifespan=_lifespan,
@@ -212,9 +215,26 @@ if _oauth_settings is not None:
         stateless_http=True,
         json_response=True,
         auth_server_provider=_auth_provider,
-        token_verifier=_token_verifier,
         auth=_auth_settings,
     )
+
+    # Register the /login routes via the SDK's custom_route decorator (the
+    # documented public API for adding non-MCP Starlette routes). The
+    # decorator places these routes outside the Bearer auth gate so the
+    # user-agent can hit /login during the /authorize flow before any token
+    # exists — which is the whole point of the passcode step.
+    from starlette.requests import Request
+    from starlette.responses import Response
+
+    @mcp.custom_route("/login", methods=["GET"])
+    async def _login(request: Request) -> Response:
+        assert oauth_provider is not None  # _oauth_settings is set
+        return await oauth_provider.render_login_page(request)
+
+    @mcp.custom_route("/login/callback", methods=["POST"])
+    async def _login_callback(request: Request) -> Response:
+        assert oauth_provider is not None
+        return await oauth_provider.handle_login_callback(request)
 else:
     mcp = FastMCP(
         name="pexels-mcp-server",
