@@ -224,19 +224,6 @@ class PexelsClient:
             api_key=self._require_key(api_key),
         )
 
-    async def curated_photos(
-        self,
-        *,
-        api_key: str | None,
-        page: int = 1,
-        per_page: int = 15,
-    ) -> tuple[dict[str, Any], dict[str, Any]]:
-        return await self._request(
-            f"{PHOTOS_PREFIX}/curated",
-            {"page": page, "per_page": per_page},
-            api_key=self._require_key(api_key),
-        )
-
     async def get_photo(
         self, photo_id: int, *, api_key: str | None
     ) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -270,30 +257,6 @@ class PexelsClient:
             api_key=self._require_key(api_key),
         )
 
-    async def popular_videos(
-        self,
-        *,
-        api_key: str | None,
-        min_width: int | None = None,
-        min_height: int | None = None,
-        min_duration: int | None = None,
-        max_duration: int | None = None,
-        page: int = 1,
-        per_page: int = 15,
-    ) -> tuple[dict[str, Any], dict[str, Any]]:
-        return await self._request(
-            f"{VIDEOS_PREFIX}/popular",
-            {
-                "min_width": min_width,
-                "min_height": min_height,
-                "min_duration": min_duration,
-                "max_duration": max_duration,
-                "page": page,
-                "per_page": per_page,
-            },
-            api_key=self._require_key(api_key),
-        )
-
     async def get_video(
         self, video_id: int, *, api_key: str | None
     ) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -303,36 +266,6 @@ class PexelsClient:
         return await self._request(
             f"{VIDEOS_PREFIX}/videos/{video_id}",
             None,
-            api_key=self._require_key(api_key),
-        )
-
-    async def list_featured_collections(
-        self,
-        *,
-        api_key: str | None,
-        page: int = 1,
-        per_page: int = 15,
-    ) -> tuple[dict[str, Any], dict[str, Any]]:
-        return await self._request(
-            f"{COLLECTIONS_PREFIX}/featured",
-            {"page": page, "per_page": per_page},
-            api_key=self._require_key(api_key),
-        )
-
-    async def list_my_collections(
-        self,
-        *,
-        api_key: str | None,
-        page: int = 1,
-        per_page: int = 15,
-    ) -> tuple[dict[str, Any], dict[str, Any]]:
-        # GET /v1/collections returns the collections owned by the API key
-        # holder. Same Authorization scheme as every other endpoint; the
-        # response shape mirrors /v1/collections/featured so format_collection_list
-        # can be reused.
-        return await self._request(
-            COLLECTIONS_PREFIX,
-            {"page": page, "per_page": per_page},
             api_key=self._require_key(api_key),
         )
 

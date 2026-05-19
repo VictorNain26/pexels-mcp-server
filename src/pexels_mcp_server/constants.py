@@ -12,7 +12,7 @@ PHOTOS_PREFIX: Final[str] = "/v1"
 VIDEOS_PREFIX: Final[str] = "/v1/videos"
 COLLECTIONS_PREFIX: Final[str] = "/v1/collections"
 
-DEFAULT_PER_PAGE: Final[int] = 15
+DEFAULT_PER_PAGE: Final[int] = 5
 MAX_PER_PAGE: Final[int] = 80
 DEFAULT_PAGE: Final[int] = 1
 

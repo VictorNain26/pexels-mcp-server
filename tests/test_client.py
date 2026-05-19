@@ -29,7 +29,7 @@ async def test_methods_reject_empty_api_key() -> None:
         with pytest.raises(PexelsAuthError):
             await client.search_photos(api_key="", query="cat")
         with pytest.raises(PexelsAuthError):
-            await client.curated_photos(api_key=None)
+            await client.search_photos(api_key=None, query="cat")
         with pytest.raises(PexelsAuthError):
             await client.search_photos(api_key="   ", query="cat")
 
@@ -95,13 +95,13 @@ async def test_client_raises_on_401(httpx_mock: HTTPXMock) -> None:
 
 async def test_client_raises_on_403(httpx_mock: HTTPXMock) -> None:
     httpx_mock.add_response(
-        url=f"{BASE_URL}/v1/curated?page=1&per_page=15",
+        url=f"{BASE_URL}/v1/search?query=cat&page=1&per_page=15",
         status_code=403,
         json={"error": "forbidden"},
     )
     async with PexelsClient() as client:
         with pytest.raises(PexelsAuthError):
-            await client.curated_photos(api_key="restricted")
+            await client.search_photos(api_key="restricted", query="cat")
 
 
 async def test_client_raises_on_429(httpx_mock: HTTPXMock) -> None:
@@ -118,7 +118,7 @@ async def test_client_raises_on_429(httpx_mock: HTTPXMock) -> None:
 
 
 async def test_client_retries_on_500_then_succeeds(httpx_mock: HTTPXMock) -> None:
-    url = f"{BASE_URL}/v1/curated?page=1&per_page=5"
+    url = f"{BASE_URL}/v1/search?query=cat&page=1&per_page=5"
     httpx_mock.add_response(url=url, status_code=500, json={"error": "boom"})
     httpx_mock.add_response(
         url=url,
@@ -127,42 +127,17 @@ async def test_client_retries_on_500_then_succeeds(httpx_mock: HTTPXMock) -> Non
         headers=_rate_headers(),
     )
     async with PexelsClient() as client:
-        body, _ = await client.curated_photos(api_key="testkey", per_page=5)
+        body, _ = await client.search_photos(api_key="testkey", query="cat", per_page=5)
     assert body["photos"] == []
 
 
 async def test_client_surfaces_persistent_500(httpx_mock: HTTPXMock) -> None:
-    url = f"{BASE_URL}/v1/curated?page=1&per_page=5"
+    url = f"{BASE_URL}/v1/search?query=cat&page=1&per_page=5"
     httpx_mock.add_response(url=url, status_code=500, json={"error": "boom"})
     httpx_mock.add_response(url=url, status_code=500, json={"error": "boom"})
     async with PexelsClient() as client:
         with pytest.raises(PexelsAPIError):
-            await client.curated_photos(api_key="testkey", per_page=5)
-
-
-async def test_list_my_collections_targets_collections_root(httpx_mock: HTTPXMock) -> None:
-    # GET /v1/collections (the bare root, NOT /v1/collections/featured) returns
-    # the collections owned by the API key holder.
-    payload = {
-        "page": 1,
-        "per_page": 15,
-        "total_results": 2,
-        "collections": [
-            {"id": "abc", "title": "My moodboard", "private": False},
-            {"id": "def", "title": "Hidden picks", "private": True},
-        ],
-    }
-    httpx_mock.add_response(
-        url=f"{BASE_URL}/v1/collections?page=1&per_page=15",
-        json=payload,
-        headers=_rate_headers(),
-        match_headers={"Authorization": "testkey"},
-    )
-    async with PexelsClient() as client:
-        body, rate = await client.list_my_collections(api_key="testkey")
-    assert body["total_results"] == 2
-    assert body["collections"][0]["id"] == "abc"
-    assert rate["limit"] == 20_000
+            await client.search_photos(api_key="testkey", query="cat", per_page=5)
 
 
 async def test_client_drops_none_query_params(httpx_mock: HTTPXMock) -> None:
