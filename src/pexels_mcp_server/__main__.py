@@ -75,6 +75,48 @@ def _resolve_transport() -> Transport:
     sys.exit(2)
 
 
+def _resolve_rate_limit() -> int:
+    """Read ``MCP_RATE_LIMIT_PER_MINUTE`` from the environment.
+
+    Defaults to 60 requests/minute/IP — enough headroom for a legitimate
+    claude.ai conversation (which typically fires fewer than 10 tool calls
+    per minute) while keeping a bot from saturating the eco-nano CPU.
+    Set to a higher value if you expect many concurrent users on one
+    instance, or to a lower value to tighten the screws.
+    """
+    return _read_positive_int_env("MCP_RATE_LIMIT_PER_MINUTE", default=60)
+
+
+def _resolve_trusted_proxy_hops() -> int:
+    """Read ``MCP_TRUSTED_PROXY_HOPS`` — how many proxies sit in front of us.
+
+    Default 1 = "Koyeb's load balancer only". If you put Cloudflare in front
+    of Koyeb, bump this to 2 so the client IP is read past both hops.
+    Setting it to 0 ignores ``X-Forwarded-For`` entirely and falls back to
+    the socket peer (only useful when there is no proxy chain at all, e.g.
+    a bare local dev run reachable directly).
+
+    The wrong value here is a real security knob: too low and the rate
+    limiter trusts a client-controlled header (bypassable); too high and
+    every caller looks like the same IP (no isolation between users).
+    """
+    return _read_positive_int_env("MCP_TRUSTED_PROXY_HOPS", default=1, allow_zero=True)
+
+
+def _read_positive_int_env(name: str, *, default: int, allow_zero: bool = False) -> int:
+    raw = os.environ.get(name, str(default)).strip()
+    try:
+        value = int(raw)
+    except ValueError:
+        sys.stderr.write(f"[pexels-mcp] ERROR {name}='{raw}' is not an integer.\n")
+        sys.exit(2)
+    minimum = 0 if allow_zero else 1
+    if value < minimum:
+        sys.stderr.write(f"[pexels-mcp] ERROR {name}='{value}' must be >= {minimum}.\n")
+        sys.exit(2)
+    return value
+
+
 def _validate_http_env() -> None:
     """Refuse to boot HTTP mode without ``MCP_SERVER_URL``.
 
@@ -99,8 +141,12 @@ def main() -> None:
     transport = _resolve_transport()
     _configure_logging(_resolve_log_format(transport))
     logger = logging.getLogger("pexels_mcp_server")
-    env_key_present = bool(os.environ.get("PEXELS_API_KEY", "").strip())
-    if transport == "stdio" and not env_key_present:
+
+    # ``PEXELS_API_KEY`` env var matters only in stdio mode (it's how local
+    # clients like Claude Desktop and Cursor inject their key). In HTTP mode
+    # the server is multi-tenant: every caller sends ``X-Pexels-Api-Key``
+    # and the env var is ignored, so we don't warn or fall back on it.
+    if transport == "stdio" and not os.environ.get("PEXELS_API_KEY", "").strip():
         logger.warning(
             "PEXELS_API_KEY is not set. Stdio clients must provide a key via "
             "env var; tools will return an auth error until it is set."
@@ -134,6 +180,7 @@ def main() -> None:
         ASGIApp,
         healthz_middleware,
         pexels_key_middleware,
+        rate_limit_middleware,
     )
 
     # FastMCP returns a Starlette app already wired with everything we need:
@@ -142,22 +189,29 @@ def main() -> None:
     # - the RFC 9728 Protected Resource Metadata
     #   (/.well-known/oauth-protected-resource)
     # - the Bearer validator wrapping /mcp
-    # - the /login and /login/callback routes we registered with
-    #   ``@mcp.custom_route`` over in ``server.py``
+    # - the GET / landing page registered with ``@mcp.custom_route`` in
+    #   ``server.py``
     starlette_app = mcp.streamable_http_app()
 
-    # Wrap with the X-Pexels-Api-Key extractor and the platform healthz
-    # short-circuit. The outermost wrap runs first per ASGI semantics.
+    # Wrap with the per-IP rate limiter, the X-Pexels-Api-Key extractor, and
+    # the platform healthz short-circuit. The outermost wrap runs first per
+    # ASGI semantics: healthz answers before any other middleware so probes
+    # never count against the rate-limit budget.
+    rate_limit_per_minute = _resolve_rate_limit()
+    trusted_proxy_hops = _resolve_trusted_proxy_hops()
     app: ASGIApp = cast(ASGIApp, starlette_app)
     app = pexels_key_middleware(app)
+    app = rate_limit_middleware(
+        app,
+        max_per_minute=rate_limit_per_minute,
+        trusted_proxy_hops=trusted_proxy_hops,
+    )
     app = healthz_middleware(app)
-
-    if env_key_present:
-        logger.warning(
-            "PEXELS_API_KEY is set on the server process. In HTTP mode this "
-            "becomes a fallback for callers who do not send X-Pexels-Api-Key. "
-            "Unset it if you want every caller to supply their own key."
-        )
+    logger.info(
+        "Rate limit: %d req/min/IP (trusted proxy hops: %d)",
+        rate_limit_per_minute,
+        trusted_proxy_hops,
+    )
 
     logger.info(
         "Starting pexels-mcp-server on streamable-http transport (%s:%d)",

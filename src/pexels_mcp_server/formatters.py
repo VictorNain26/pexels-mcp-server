@@ -183,7 +183,7 @@ def format_photo_list(
         media_projector=photo_to_json,
     )
     if response_format == "json":
-        return json.dumps(envelope, indent=2, ensure_ascii=False)
+        return json.dumps(envelope, ensure_ascii=False, separators=(",", ":"))
     header = (
         f"**Pexels photos** - {envelope['total_results']} total, "
         f"page {envelope['page']} ({envelope['count']} shown)"
@@ -207,7 +207,7 @@ def format_video_list(
         media_projector=video_to_json,
     )
     if response_format == "json":
-        return json.dumps(envelope, indent=2, ensure_ascii=False)
+        return json.dumps(envelope, ensure_ascii=False, separators=(",", ":"))
     header = (
         f"**Pexels videos** - {envelope['total_results']} total, "
         f"page {envelope['page']} ({envelope['count']} shown)"
@@ -231,7 +231,7 @@ def format_collection_list(
         media_projector=collection_to_json,
     )
     if response_format == "json":
-        return json.dumps(envelope, indent=2, ensure_ascii=False)
+        return json.dumps(envelope, ensure_ascii=False, separators=(",", ":"))
     header = (
         f"**Pexels collections** - {envelope['total_results']} total, "
         f"page {envelope['page']} ({envelope['count']} shown)"
@@ -267,7 +267,7 @@ def format_collection_media(
         "videos": [video_to_json(v) for v in videos],
     }
     if response_format == "json":
-        return json.dumps(envelope, indent=2, ensure_ascii=False)
+        return json.dumps(envelope, ensure_ascii=False, separators=(",", ":"))
     header = (
         f"**Pexels collection {_safe(payload.get('id'), '(unknown)')}** - "
         f"{_safe(total, '?')} total, "

@@ -61,11 +61,21 @@ The **real** authentication of every tool call is the caller's own `X-Pexels-Api
 | `TRANSPORT` | yes | Set to `streamable-http`. |
 | `MCP_SERVER_URL` | yes | Public HTTPS URL of this service, no trailing slash (e.g. `https://pexels-mcp.example.com`). Used as both the OAuth `issuer_url` and the RFC 9728 `resource_server_url`. **Must match the host the client sees.** |
 | `MCP_ALLOWED_HOSTS` | no | Comma-separated allowlist for the `Host` header (DNS rebinding protection per MCP spec 2025-06-18). Supports the `host:*` wildcard. Unset = accept any Host. |
+| `MCP_RATE_LIMIT_PER_MINUTE` | no | Soft DoS guard, default `60`. Max requests/minute/IP. `/healthz`, `/readyz` and the OAuth metadata endpoints are exempt. Set higher if many users share one instance; lower to tighten. |
 | `HOST` | no | Default `127.0.0.1`; the Docker image flips it to `0.0.0.0`. |
 | `PORT` | no | Default `8000`. Platforms like Koyeb / Fly inject this automatically. |
 | `LOG_LEVEL` | no | Default `INFO`. |
 | `LOG_FORMAT` | no | `text` or `json` (default `json` in HTTP mode for log-drain ingestion). |
-| `PEXELS_API_KEY` | no | Server-side fallback key for callers who omit `X-Pexels-Api-Key`. Leave unset for multi-tenant deployments — each caller pays its own Pexels quota. |
+| `MCP_TRUSTED_PROXY_HOPS` | no | Number of trusted proxies in front of the app, default `1` (Koyeb's LB). Used to read the real client IP from `X-Forwarded-For` from the *right* (which is server-controlled) instead of the *left* (which a caller can spoof). Set to `2` if you front Koyeb with Cloudflare; `0` disables `X-Forwarded-For` parsing entirely. |
+| `PEXELS_API_KEY` | **stdio only** | Used by local stdio clients (Claude Desktop, Cursor) to inject their key once at process start. **Ignored in `streamable-http` mode** — callers must always send `X-Pexels-Api-Key` per request. |
+
+### Rate limiting
+
+Each public endpoint (`/mcp`, the OAuth routes, the landing page) is capped at **60 requests/minute per source IP** by default. The cap is a soft DoS guard for a single-instance `eco-nano` Koyeb deployment — beyond the limit the server returns `429 Too Many Requests` with a `Retry-After` header per RFC 9110 §15.5.20. The source IP is read from `X-Forwarded-For` (Koyeb's load balancer sets it) with a fallback to the socket peer.
+
+`/healthz`, `/readyz`, `/.well-known/oauth-protected-resource` and `/.well-known/oauth-authorization-server` are **exempt** — platform probes and discovery clients must always reach the server.
+
+Tune via `MCP_RATE_LIMIT_PER_MINUTE`. Pexels' own rate limit (200 req/hour on the caller's key) is a second, complementary line of defense — even a bot that gets through the per-IP cap can't drain anyone's Pexels quota except its own.
 
 ### Health and readiness probes
 

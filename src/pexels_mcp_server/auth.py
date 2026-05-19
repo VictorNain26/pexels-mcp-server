@@ -86,14 +86,18 @@ class PexelsOAuthProvider(
     the caller's ``X-Pexels-Api-Key`` header forwarded to Pexels.
     """
 
-    def __init__(self, *, server_url: str) -> None:
+    def __init__(self, *, server_url: str, max_tracked_clients: int = 10_000) -> None:
         if not server_url:
             raise ValueError("server_url is required")
         self._server_url = server_url.rstrip("/")
+        self._max_tracked_clients = max_tracked_clients
 
         self._clients: dict[str, OAuthClientInformationFull] = {}
         self._auth_codes: dict[str, AuthorizationCode] = {}
         self._tokens: dict[str, AccessToken] = {}
+        # Last time we swept expired codes + tokens. Sweeps run at most once
+        # every minute so the cost stays O(N) per minute rather than per call.
+        self._last_sweep_at: float = 0.0
 
     # ------------------------------------------------------------------ DCR
 
@@ -103,8 +107,55 @@ class PexelsOAuthProvider(
     async def register_client(self, client_info: OAuthClientInformationFull) -> None:
         if not client_info.client_id:
             raise ValueError("No client_id provided")
+        # DCR is open (anyone can register), so cap the dict. If we exceed
+        # the cap, drop the oldest half (FIFO via insertion order). Dropped
+        # clients can re-register transparently on their next /authorize.
+        if (
+            client_info.client_id not in self._clients
+            and len(self._clients) >= self._max_tracked_clients
+        ):
+            drop_count = self._max_tracked_clients // 2
+            for stale_id in list(self._clients.keys())[:drop_count]:
+                del self._clients[stale_id]
+            logger.warning(
+                "OAuth client store hit cap (%d), evicted oldest %d entries",
+                self._max_tracked_clients,
+                drop_count,
+            )
         self._clients[client_info.client_id] = client_info
         logger.info("Registered OAuth client %s", client_info.client_id)
+
+    def _maybe_sweep_expired(self, now: float) -> None:
+        """Drop expired authorization codes and access tokens.
+
+        Runs at most once a minute (covers the 5 min code TTL and the 1 h
+        token TTL with plenty of margin). Called under no lock — the
+        provider is accessed from a single asyncio event loop, so dict
+        mutation during iteration is safe as long as we materialize the
+        key list first.
+        """
+        if now - self._last_sweep_at < 60.0:
+            return
+        self._last_sweep_at = now
+        expired_codes = [code for code, ac in self._auth_codes.items() if ac.expires_at < now]
+        for code in expired_codes:
+            del self._auth_codes[code]
+        expired_tokens = [
+            token
+            for token, at in self._tokens.items()
+            if at.expires_at is not None and at.expires_at < now
+        ]
+        for token in expired_tokens:
+            del self._tokens[token]
+        if expired_codes or expired_tokens:
+            logger.info(
+                "OAuth sweep: dropped %d expired codes, %d expired tokens "
+                "(remaining: %d codes, %d tokens)",
+                len(expired_codes),
+                len(expired_tokens),
+                len(self._auth_codes),
+                len(self._tokens),
+            )
 
     # ---------------------------------------------------------- /authorize
 
@@ -120,6 +171,7 @@ class PexelsOAuthProvider(
         this into a 302 so the user-agent never sees a server-side page —
         the flow appears instantaneous to the human.
         """
+        self._maybe_sweep_expired(time.time())
         state = params.state or secrets.token_hex(16)
         new_code = f"mcp_{secrets.token_hex(16)}"
         self._auth_codes[new_code] = AuthorizationCode(
@@ -196,10 +248,12 @@ class PexelsOAuthProvider(
     # --------------------------------------------------- access-token store
 
     async def load_access_token(self, token: str) -> AccessToken | None:
+        now = time.time()
+        self._maybe_sweep_expired(now)
         access_token = self._tokens.get(token)
         if access_token is None:
             return None
-        if access_token.expires_at is not None and access_token.expires_at < time.time():
+        if access_token.expires_at is not None and access_token.expires_at < now:
             del self._tokens[token]
             return None
         return access_token

@@ -114,10 +114,27 @@ class PexelsClient:
     """
 
     def __init__(self, *, timeout: float = HTTP_TIMEOUT_SECONDS) -> None:
+        # ``api.pexels.com`` negotiates HTTP/2 via ALPN. One TLS connection
+        # is then reused across every concurrent tool call this process
+        # serves, multiplexing requests on a single stream so:
+        #   - The TLS handshake cost is paid once (~80-150 ms saved on each
+        #     reused connection vs HTTP/1.1 + new connection).
+        #   - Concurrent requests no longer block on the keepalive pool size
+        #     when many MCP users hit the server at once — they share the
+        #     one HTTP/2 connection until Pexels caps stream concurrency
+        #     (usually 100, far above any realistic per-process load).
+        # If Pexels ever stops advertising h2 over ALPN, httpx silently
+        # falls back to HTTP/1.1 — no behaviour change for callers.
         self._client = httpx.AsyncClient(
             base_url=BASE_URL,
             headers={"User-Agent": USER_AGENT},
             timeout=timeout,
+            http2=True,
+            limits=httpx.Limits(
+                max_connections=100,
+                max_keepalive_connections=20,
+                keepalive_expiry=60,
+            ),
         )
 
     async def aclose(self) -> None:

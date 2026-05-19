@@ -94,7 +94,10 @@ def _resolve_api_key(ctx: Context) -> str | None:  # type: ignore[type-arg]
     2. The ``pexels_key_ctx`` ContextVar populated by ``pexels_key_middleware``
        in ``stateless_http`` deployments (each request runs in its own task,
        so the var propagates).
-    3. The ``PEXELS_API_KEY`` env var (stdio transport, local config).
+    3. The ``PEXELS_API_KEY`` env var — **stdio mode only**. In HTTP mode we
+       deliberately ignore the env var so a caller who forgets the
+       ``X-Pexels-Api-Key`` header gets an actionable error instead of
+       silently consuming the operator's Pexels quota.
     """
     request = getattr(getattr(ctx, "request_context", None), "request", None)
     if request is not None:
@@ -112,6 +115,13 @@ def _resolve_api_key(ctx: Context) -> str | None:  # type: ignore[type-arg]
     if cv_val:
         return cv_val
 
+    # Env-var fallback is stdio-only. In HTTP mode, refusing to fall back
+    # eliminates the "quota theft" risk: if Bob forgets the X-Pexels-Api-Key
+    # header, his calls fail with "key missing" instead of silently spending
+    # the operator's quota.
+    transport = os.environ.get("TRANSPORT", "stdio").strip().lower()
+    if transport == "streamable-http":
+        return None
     return os.environ.get("PEXELS_API_KEY", "").strip() or None
 
 
@@ -174,20 +184,41 @@ oauth_provider: PexelsOAuthProvider | None = (
 def _build_transport_security() -> TransportSecuritySettings:
     """Configure DNS rebinding protection for the HTTP transport.
 
-    By default FastMCP enables a strict ``allowed_hosts`` whitelist limited to
-    localhost, which is correct for laptop dev but breaks every public
-    deployment (the Host header is the platform's domain). The Bearer auth
-    middleware already covers the threat that DNS rebinding aims at, so we
-    flip the default and let operators opt back in via ``MCP_ALLOWED_HOSTS``
-    (comma-separated, supports the ``host:*`` wildcard the SDK accepts).
+    MCP spec 2025-06-18 §Streamable HTTP requires ``Origin`` validation. The
+    SDK ships with a strict localhost-only allowlist by default — correct
+    for laptop dev but it 403s every hosted deployment because the public
+    host never matches ``127.0.0.1``.
+
+    We resolve ``allowed_hosts`` in this order:
+
+    1. ``MCP_ALLOWED_HOSTS`` env var if explicitly set
+       (comma-separated, supports the ``host:*`` wildcard).
+    2. Auto-derived from the hostname of ``MCP_SERVER_URL`` — so the public
+       host is automatically allowlisted without an extra env var.
+    3. ``enable_dns_rebinding_protection=False`` only when neither var is
+       set (stdio mode or local HTTP testing).
     """
     allowed_hosts_env = os.environ.get("MCP_ALLOWED_HOSTS", "").strip()
-    if not allowed_hosts_env:
-        return TransportSecuritySettings(enable_dns_rebinding_protection=False)
-    return TransportSecuritySettings(
-        enable_dns_rebinding_protection=True,
-        allowed_hosts=[h.strip() for h in allowed_hosts_env.split(",") if h.strip()],
-    )
+    if allowed_hosts_env:
+        return TransportSecuritySettings(
+            enable_dns_rebinding_protection=True,
+            allowed_hosts=[h.strip() for h in allowed_hosts_env.split(",") if h.strip()],
+        )
+
+    server_url = os.environ.get("MCP_SERVER_URL", "").strip()
+    if server_url:
+        from urllib.parse import urlparse
+
+        parsed = urlparse(server_url)
+        if parsed.hostname:
+            # Allow the bare host and any port the platform routes through.
+            host_pattern = f"{parsed.hostname}:*"
+            return TransportSecuritySettings(
+                enable_dns_rebinding_protection=True,
+                allowed_hosts=[parsed.hostname, host_pattern],
+            )
+
+    return TransportSecuritySettings(enable_dns_rebinding_protection=False)
 
 
 # When TRANSPORT=streamable-http and the OAuth env vars are set, FastMCP
@@ -214,6 +245,34 @@ if _oauth_settings is not None:
         auth_server_provider=_auth_provider,
         auth=_auth_settings,
     )
+
+    # Public landing page at GET /. Replaces the default 404 on the root so
+    # anyone who opens the bare URL sees what this service is and how to
+    # plug it into their MCP client.
+    #
+    # The HTML lives in ``templates/landing.html`` (loaded via
+    # ``importlib.resources`` so it works whether the package is installed
+    # from source, wheel or sdist). The MCP endpoint URL is filled in
+    # client-side from ``window.location.origin`` so the HTML stays a fully
+    # static asset — no server-side templating, no string formatting in
+    # Python, no leaked private attribute from the OAuth provider.
+    #
+    # ``@mcp.custom_route`` is the SDK's documented public API for non-MCP
+    # Starlette endpoints; its docstring explicitly cites OAuth-flow
+    # companion routes as the intended use case.
+    from importlib.resources import files
+
+    from starlette.requests import Request
+    from starlette.responses import HTMLResponse, Response
+
+    _LANDING_HTML = (files("pexels_mcp_server") / "templates" / "landing.html").read_text(
+        encoding="utf-8"
+    )
+
+    @mcp.custom_route("/", methods=["GET"])
+    async def _landing(request: Request) -> Response:
+        del request  # endpoint signature requires it; we don't use it
+        return HTMLResponse(content=_LANDING_HTML)
 else:
     mcp = FastMCP(
         name="pexels-mcp-server",

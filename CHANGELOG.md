@@ -4,6 +4,29 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ## [Unreleased]
 
+### Added (public-MCP polish + audit findings)
+- `rate_limit_middleware` in `transport.py` — sliding-window per source IP, 60 requests/minute by default. Configurable via `MCP_RATE_LIMIT_PER_MINUTE`. Source IP read from `X-Forwarded-For` **from the right minus N hops** (controlled by `MCP_TRUSTED_PROXY_HOPS`, default 1 = "Koyeb LB only"). Prior implementations read the leftmost entry, which is client-controlled and trivially spoofable; the new logic only trusts the part of the chain a known proxy wrote. Returns `429 Too Many Requests` with a spec-compliant `Retry-After` header (RFC 9110 §15.5.20). `/healthz`, `/readyz`, `/.well-known/oauth-protected-resource` and `/.well-known/oauth-authorization-server` are exempt.
+- `MCP_TRUSTED_PROXY_HOPS` env var — number of trusted proxies in front of the app. Default `1` (Koyeb's LB). Set to `2` for Cloudflare-in-front-of-Koyeb; set to `0` to ignore `X-Forwarded-For` entirely (no proxy chain at all).
+- HTTP/2 on the outbound Pexels client (`client.py`). `httpx.AsyncClient(http2=True, limits=httpx.Limits(max_connections=100, max_keepalive_connections=20, keepalive_expiry=60))`. Pexels advertises h2 over ALPN; one TLS connection is now multiplexed across all concurrent tool calls served by the process. New transitive dep: `httpx[http2]` extra (pulls in `h2`, `hpack`, `hyperframe` — ~80 KB total).
+- DNS rebinding protection now auto-on by default when `MCP_SERVER_URL` is set. The hostname is added to `allowed_hosts` automatically; `MCP_ALLOWED_HOSTS` is only needed for additional hosts. Previously the protection defaulted to **off** unless `MCP_ALLOWED_HOSTS` was set explicitly, which left the OAuth + landing routes (outside the Bearer gate) reachable via DNS rebinding attacks.
+- OAuth provider sweep — `PexelsOAuthProvider._maybe_sweep_expired` drops expired authorization codes and access tokens once a minute. Bounds memory under bot churn (abandoned authorize flows, expired tokens that never get a `load_access_token` call). Client store also capped at `max_tracked_clients=10_000` with FIFO eviction.
+- Window-edge fix in the rate limiter — `hits[0] <= cutoff` (was `<`) so a hit at t=0 expires at exactly t=60 on a 60 s window, not at t=61.
+- `Pagination.page` upper-bounded at `le=10_000`. Stops a caller from wasting an outbound HTTP round-trip on a `page=999_999_999`.
+- Public landing page at `GET /` (replaces the previous 404 on the root). HTML lives in `src/pexels_mcp_server/templates/landing.html`, loaded once at module import via `importlib.resources`. The MCP endpoint URL is rendered client-side from `window.location.origin` so the HTML stays a fully static asset. Served via `@mcp.custom_route` — the SDK's documented hook for non-MCP Starlette endpoints.
+- `SUBMIT.md` — tracks the submission status to the Anthropic Connector Directory ([clau.de/mcp-directory-submission](https://clau.de/mcp-directory-submission)). Pre-filled answers, pre-submission checklist (5 categories), common rejection reasons and how this repo addresses each.
+
+### Removed
+- `PEXELS_API_KEY` fallback in HTTP mode (`server.py::_resolve_api_key`). The env var was a silent server-wide fallback: any caller who omitted `X-Pexels-Api-Key` would consume the operator's quota. Now ignored in HTTP mode — callers who forget the header get an actionable "key missing" error instead. Stdio mode is unchanged (the env var remains the way local clients like Claude Desktop and Cursor inject their key).
+- The boot-time warning "PEXELS_API_KEY is set on the server process" in `__main__.py` — the variable is no longer read in HTTP mode, so the warning is dead code.
+
+### Changed
+- `formatters.py` — `json.dumps(envelope, indent=2, ...)` → `json.dumps(envelope, separators=(",",":"), ...)`. Drops ~30 % of response bytes and ~2-3x CPU on the response serialization path. The agents reading the JSON do not need indentation.
+- `CLAUDE.md` rewritten as an operational guide ("how to work in this repo + AI lifecycle baseline May 2026") instead of a functional doc duplicate. Functional context now lives in `README.md`, `PRIVACY.md`, `CONTRIBUTING.md`, `SUBMIT.md`, `CHANGELOG.md` — `CLAUDE.md` links there.
+
+
+- Public landing page at `GET /` (replaces the previous 404 on the root). Served via `@mcp.custom_route` — the SDK's documented hook for non-MCP Starlette endpoints. The page explains what the server is, the URL to plug into claude.ai, the requirement to supply your own Pexels API key, and links back to the GitHub repo. Outside the OAuth gate so anyone can read it.
+- `SUBMIT.md` — tracks the submission status to the Anthropic Connector Directory. Lists the official form URL ([clau.de/mcp-directory-submission](https://clau.de/mcp-directory-submission)), the required checklist (security, docs, privacy, branding), per-field pre-filled answers, common rejection reasons and how this repo addresses each.
+
 ### Breaking (public-MCP variant)
 - The OAuth flow is now **auto-approved**: there is no `/login` page, no shared passcode, no human consent step. Anyone with a Pexels API key can connect any MCP HTTP client. The Bearer token issued by `/token` only proves the client navigated the spec-compliant handshake every MCP HTTP client runs unconditionally; the real authentication of every tool call is the caller's own `X-Pexels-Api-Key` header forwarded to `api.pexels.com`.
 - **Removed env var**: `MCP_AUTH_PASSCODE`. Drop it from your hosted deployment.

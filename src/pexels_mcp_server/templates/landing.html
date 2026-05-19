@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>Pexels MCP server</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="Free Pexels photo and video search exposed as a public Model Context Protocol server. Plug into Claude, Cursor and any MCP HTTP client.">
+    <meta property="og:title" content="Pexels MCP server">
+    <meta property="og:description" content="Free Pexels photo and video search inside Claude. OAuth 2.1, public endpoint, bring-your-own Pexels API key.">
+    <meta property="og:type" content="website">
+    <style>
+        :root {
+            color-scheme: dark;
+            --bg: #0d0d0d;
+            --bg-elevated: #1a1a1a;
+            --border: #2a2a2a;
+            --text: #e8e8e8;
+            --text-muted: #999;
+            --text-dim: #bbb;
+            --accent: #4a9eff;
+            --accent-hover: #3a8eef;
+            --badge-bg: #1a3a1a;
+            --badge-text: #7fce7f;
+            --code-bg: #1a1a1a;
+        }
+        * { box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            max-width: 720px;
+            margin: 0 auto;
+            padding: 48px 24px 80px;
+            line-height: 1.55;
+        }
+        header { margin-bottom: 32px; }
+        h1 {
+            font-size: 28px;
+            margin: 0 0 6px;
+            font-weight: 600;
+            letter-spacing: -0.5px;
+        }
+        h2 {
+            font-size: 17px;
+            margin: 36px 0 10px;
+            color: var(--text);
+            font-weight: 600;
+        }
+        p, li { font-size: 15px; color: var(--text-dim); }
+        ol, ul { padding-left: 22px; }
+        ol li, ul li { margin-bottom: 8px; }
+        code {
+            background: var(--code-bg);
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            padding: 2px 6px;
+            font-size: 13px;
+            font-family: "SF Mono", Menlo, Consolas, monospace;
+            color: var(--text);
+            word-break: break-all;
+        }
+        pre {
+            background: var(--code-bg);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 12px 14px;
+            overflow-x: auto;
+            font-size: 13px;
+            font-family: "SF Mono", Menlo, Consolas, monospace;
+            margin: 8px 0;
+        }
+        pre code {
+            background: transparent;
+            border: 0;
+            padding: 0;
+        }
+        a {
+            color: var(--accent);
+            text-decoration: none;
+            border-bottom: 1px solid transparent;
+            transition: border-color 0.15s;
+        }
+        a:hover { border-bottom-color: var(--accent); }
+        .badge {
+            display: inline-block;
+            background: var(--badge-bg);
+            color: var(--badge-text);
+            padding: 3px 9px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 600;
+            letter-spacing: 0.3px;
+            vertical-align: middle;
+            margin-left: 4px;
+        }
+        .tagline {
+            font-size: 15px;
+            color: var(--text-muted);
+            margin: 0;
+        }
+        footer {
+            margin-top: 48px;
+            padding-top: 24px;
+            border-top: 1px solid var(--border);
+            font-size: 13px;
+            color: var(--text-muted);
+        }
+        @media (max-width: 480px) {
+            body { padding: 32px 16px 60px; }
+            h1 { font-size: 24px; }
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>Pexels MCP server <span class="badge">PUBLIC</span></h1>
+        <p class="tagline">Free Pexels photo and video search exposed as a Model Context Protocol server. Nine read-only tools, OAuth 2.1, bring-your-own Pexels API key.</p>
+    </header>
+
+    <main>
+        <h2>Connect from claude.ai web</h2>
+        <ol>
+            <li>Settings &rarr; Connectors &rarr; <strong>Add custom connector</strong>.</li>
+            <li>URL: <code id="mcp-url">loading...</code></li>
+            <li>Click <strong>Connect</strong> &mdash; the OAuth handshake completes automatically (browser flashes briefly, no input).</li>
+            <li>Open <strong>Advanced settings</strong> on the connector and add this custom header:
+                <pre><code>X-Pexels-Api-Key: &lt;your own free Pexels API key&gt;</code></pre>
+                Get one at <a href="https://www.pexels.com/api/" target="_blank" rel="noopener">pexels.com/api</a>.
+            </li>
+            <li>Activate the connector in a conversation, try: <em>&laquo; Find me three landscape photos of Paris on Pexels &raquo;</em>.</li>
+        </ol>
+
+        <h2>Your Pexels quota stays yours</h2>
+        <p>Your <code>X-Pexels-Api-Key</code> header is forwarded to <code>api.pexels.com</code> on every call and never stored on the server. Every request you make counts against <em>your</em> Pexels quota (200/hour on the free tier), not anyone else's.</p>
+
+        <h2>Tools exposed</h2>
+        <ul>
+            <li><strong>Photos</strong>: <code>pexels_search_photos</code>, <code>pexels_curated_photos</code>, <code>pexels_get_photo</code></li>
+            <li><strong>Videos</strong>: <code>pexels_search_videos</code>, <code>pexels_popular_videos</code>, <code>pexels_get_video</code></li>
+            <li><strong>Collections</strong>: <code>pexels_list_featured_collections</code>, <code>pexels_get_my_collections</code>, <code>pexels_get_collection_media</code></li>
+        </ul>
+
+        <h2>Other MCP clients</h2>
+        <p>Same URL works with Claude Desktop (Settings &rarr; Connectors &rarr; Add), Claude Code (<code>claude mcp add</code> with <code>--transport http</code>), and the official MCP Inspector. OAuth discovery is automatic via <a href="https://datatracker.ietf.org/doc/html/rfc9728" target="_blank" rel="noopener">RFC 9728</a> protected-resource metadata.</p>
+    </main>
+
+    <footer>
+        Source &amp; docs: <a href="https://github.com/VictorNain26/pexels-mcp-server" target="_blank" rel="noopener">github.com/VictorNain26/pexels-mcp-server</a> &mdash; MIT licensed.
+    </footer>
+
+    <script>
+        // The MCP endpoint is always at /mcp on this host. We compute the URL
+        // client-side so the HTML stays a static asset (no server-side
+        // templating, no string formatting in Python, no leaked private
+        // attribute from the OAuth provider).
+        document.getElementById('mcp-url').textContent = window.location.origin + '/mcp';
+    </script>
+</body>
+</html>
