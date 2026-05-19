@@ -37,8 +37,8 @@ forces clients to walk the flow again on the next call.
 
 References
 ----------
-- MCP spec 2025-06-18, Authorization:
-  https://modelcontextprotocol.io/specification/2025-06-18/basic/authorization
+- MCP spec 2025-11-25, Authorization:
+  https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization
 - SDK reference implementation:
   https://github.com/modelcontextprotocol/python-sdk/tree/main/examples/servers/simple-auth
 - RFC 9728 (Protected Resource Metadata) — served by FastMCP itself.

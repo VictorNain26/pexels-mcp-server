@@ -30,5 +30,3 @@ def _resolve_version() -> str:
 USER_AGENT: Final[str] = (
     f"pexels-mcp-server/{_resolve_version()} (+https://github.com/VictorNain26/pexels-mcp-server)"
 )
-
-PEXELS_ATTRIBUTION: Final[str] = "Photos provided by Pexels (https://www.pexels.com)"

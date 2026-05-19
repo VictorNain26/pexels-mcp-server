@@ -29,8 +29,12 @@ re-explanation into this file or into a code comment.
 - **Comments answer the *why*, never the *what*.** No "added for ticket X",
   no "used by Y" — those rot. Source of truth for *why* is the commit
   message and the linked spec/RFC.
-- **Errors are agent-actionable strings**, not stack traces. See
-  `client.py::PexelsAPIError` family and `server.py::_format_error`.
+- **Errors are agent-actionable, raised from the tool body.** Validation
+  errors flatten via `server.py::_raise_invalid_params`; Pexels errors
+  (`PexelsAuthError`, `PexelsRateLimitError`, `PexelsAPIError`) propagate
+  as-is. FastMCP catches each and marks the `CallToolResult` with
+  `isError=true` per MCP spec 2025-11-25 SEP-1303 — never catch and
+  return a string, that would silently mark the result as success.
 - **Tool docstrings are written for the LLM caller**, not the human dev. Every
   tool MUST have: a one-line purpose, **USE WHEN**, **DO NOT USE WHEN**, and a
   return-shape teaser. Follow
@@ -82,10 +86,14 @@ from this shape is what produces the patches you regret later.
   `.venv/lib/.../<pkg>` is also valid. Never invoke an API from memory if a
   fresh check is one tool call away.
 - **For the MCP spec, the canonical sources are:** the
-  [2025-06-18 spec](https://modelcontextprotocol.io/specification/2025-06-18)
-  and the
+  [2025-11-25 spec](https://modelcontextprotocol.io/specification/2025-11-25)
+  (current revision; the SDK still negotiates downgrade to `2025-06-18`
+  and `2025-03-26`) and the
   [SDK reference implementation](https://github.com/modelcontextprotocol/python-sdk/tree/main/examples/servers/simple-auth).
-  Match their patterns; do not invent variants.
+  Match their patterns; do not invent variants. Notable 2025-11-25 changes
+  we already comply with: structured tool output (`structuredContent`),
+  `isError=true` on tool execution failures (SEP-1303), and
+  `serverInfo.instructions`.
 
 ### 2. Plan, then branch
 

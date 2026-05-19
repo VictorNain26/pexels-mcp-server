@@ -4,6 +4,49 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ## [Unreleased]
 
+### Changed (MCP spec 2025-11-25 alignment + doc sync — 2026-05-19) — **BREAKING**
+
+Production-quality audit pass against the latest MCP spec revision
+(2025-11-25). Three buckets:
+
+**Spec compliance.**
+- Tools now return a typed `dict` instead of a JSON-encoded string. The
+  SDK fills both `structuredContent` (consumed by hosts that read it
+  directly) and a serialized JSON `TextContent` block (backwards compat)
+  — SHOULD per MCP spec 2025-11-25 for any tool returning parseable data.
+- Tool execution errors now **raise** (Pydantic `ValidationError`
+  flattened to `Invalid parameters: <field>: <msg>`; Pexels errors
+  propagate as-is). FastMCP marks the `CallToolResult` with
+  `isError=true` per SEP-1303 instead of returning the error as a normal
+  success result.
+- `serverInfo.instructions` filled with a short one-paragraph
+  description (new in 2025-11-25).
+- Bumped reference spec from 2025-06-18 → 2025-11-25 in all docs and
+  HTTPS-guard messages.
+
+**Surface simplification.**
+- Dropped the `response_format` parameter on every tool. The
+  JSON-only direction (CHANGELOG 2026-05-19 tech-lead pass) is now
+  reflected in the input schema: no markdown branch, no `ResponseFormat`
+  enum, ~100 lines of markdown formatting code removed from
+  `formatters.py`. Saves tokens at conversation init and lets every
+  tool advertise a clean structured-output contract.
+- `_resolve_api_key` now reads the `X-Pexels-Api-Key` header through a
+  single canonical source (the `pexels_key_ctx` ContextVar populated by
+  the ASGI middleware) instead of also re-reading the request headers
+  directly. Same behaviour, half the code.
+- `PEXELS_ATTRIBUTION` constant removed (only used by the deleted
+  markdown footer).
+
+**Doc drift fixes.** README, landing page, SUBMIT.md and CONTRIBUTING.md
+were still referencing the pre-2026-05-19 surface: 9 tools, `thumbnail_url`,
+`rate_limit` envelope, `include_previews`, `min_duration` / `max_duration`,
+MCP Apps inline rendering, `pexels_curated_photos` /
+`pexels_popular_videos` / `pexels_list_featured_collections` /
+`pexels_get_my_collections`, and the wrong "advanced settings → add
+header" connect flow (the BYOK `/setup` form has replaced it since
+PR #14). All four docs now describe what the code actually does.
+
 ### Reverted
 - `DEFAULT_PER_PAGE` 5 → 15. The previous flip was based on an unverified
   hypothesis ("marketing briefs ask for 3-5"). Reality: when the user

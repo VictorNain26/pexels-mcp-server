@@ -27,10 +27,10 @@ list nine sections. Pre-filled answers for this repo:
 | **Server name** | `Pexels` |
 | **Public URL** | `https://pexels-mcp-tomia-9e578486.koyeb.app/mcp` (or the future custom domain) |
 | **Tagline** | "Free Pexels photo and video search inside Claude." |
-| **Description** | Async MCP server that exposes nine read-only Pexels REST tools (search, browse, resolve photos / videos / collections). Auto-approved OAuth 2.1 — each caller supplies their own Pexels API key so quota stays per-user. |
-| **Transport** | Streamable HTTP (per MCP spec 2025-06-18). |
-| **Auth type** | OAuth 2.1 + RFC 9728 PRM + RFC 8414 AS metadata + RFC 7591 DCR + PKCE. Auto-approved (no user-typed secret). |
-| **Tools** | 9 read-only tools, see [README](README.md#what-the-agent-can-do). Every tool advertises `readOnlyHint=true`, `destructiveHint=false`, `idempotentHint=true`, `openWorldHint=true`, and has a `title`. |
+| **Description** | Async MCP server that exposes five read-only Pexels REST tools (search photos / get photo / search videos / get video / get collection media). Per-user BYOK OAuth 2.1 — each caller pastes their own Pexels API key once into the `/setup` form during the OAuth handshake, so quota stays per-user. |
+| **Transport** | Streamable HTTP (per MCP spec 2025-11-25). |
+| **Auth type** | OAuth 2.1 + RFC 9728 PRM + RFC 8414 AS metadata + RFC 7591 DCR + PKCE. BYOK flow: the server redirects to its own `/setup` HTML form during `/authorize`, asks for the user's Pexels API key, validates it against `api.pexels.com`, then mints the authorization code with the key bound to the future access token. |
+| **Tools** | 5 read-only tools, see [README](README.md#what-the-agent-can-do). Every tool advertises `readOnlyHint=true`, `destructiveHint=false`, `idempotentHint=true`, `openWorldHint=true`, has a `title`, and returns structured JSON output (`structuredContent` + serialized text). |
 | **Test credentials** | A free Pexels API key (https://www.pexels.com/api/) — Anthropic reviewers can sign up in <2 min. Provide one in the form's "test account" field; the key is the user's own Pexels key, not a shared secret. |
 | **Public docs** | This repo: <https://github.com/VictorNain26/pexels-mcp-server>. README covers connect flow + three usage examples. |
 | **Privacy policy** | [`PRIVACY.md`](PRIVACY.md) in this repo. Section-1 "what the server processes", section-2 "what the server stores (nothing)", section-3 "what the server logs (no payloads, no keys)", section-4 "third parties (api.pexels.com, images.pexels.com only)". |
@@ -46,7 +46,8 @@ already in place — the items marked `[ ]` need attention.
 
 - [x] OAuth 2.0+ implemented (we ship OAuth 2.1 with PKCE).
 - [x] Every tool has `readOnlyHint` and a `title` (set in `server.py` via
-      `ToolAnnotations`).
+      `ToolAnnotations`). All five tools also return structured output
+      (`structuredContent`) as recommended by the 2025-11-25 spec.
 - [x] `Origin` header validation available (`MCP_ALLOWED_HOSTS` env var,
       set to `{{ KOYEB_PUBLIC_DOMAIN }}` in production).
 - [x] HTTPS public endpoint (Koyeb terminates TLS for us).
@@ -94,7 +95,7 @@ Per the [Sunpeak Connector Directory submission walkthrough](https://sunpeak.ai/
 
 | Reason | % of rejections | How we address it |
 |---|---|---|
-| Missing tool annotations | ~30 % | All 9 tools advertise the full `ToolAnnotations` block. |
+| Missing tool annotations | ~30 % | All 5 tools advertise the full `ToolAnnotations` block. |
 | OAuth callback URL errors | next-most-common | We accept whatever `redirect_uri` the client registers via DCR — claude.ai's callback domain is included automatically. |
 | Missing privacy policy | rejection on the spot | [`PRIVACY.md`](PRIVACY.md) covers every required section. |
 | Incomplete docs | common | README + CLAUDE.md + CONTRIBUTING + this file + three usage examples. |

@@ -33,27 +33,32 @@ src/pexels_mcp_server/
   auth.py              In-process OAuth Authorization Server (PexelsOAuthProvider) + /setup BYOK form
   client.py            Async httpx client wrapping the Pexels REST API
   schemas.py           Pydantic v2 input models (extra="forbid")
-  formatters.py        Token-lean JSON projections + Markdown bullets
-  transport.py         ASGI middleware (healthz, X-Pexels-Api-Key extractor)
-  constants.py         BASE_URL, pagination limits
+  formatters.py        Token-lean dict projections (returned to FastMCP as structuredContent)
+  transport.py         ASGI middleware (healthz/readyz, rate limit, X-Pexels-Api-Key extractor)
+  constants.py         BASE_URL, pagination limits, User-Agent
+  templates/           landing.html (GET /) + setup.html (GET/POST /setup)
 tests/
-  test_client.py       HTTP layer (pytest-httpx)
-  test_schemas.py      Pydantic validation
-  test_formatters.py   Lean output shape
-  test_transport.py    ASGI middleware (healthz, pexels_key)
-  test_auth.py         OAuth provider unit tests (register, authorize, login, exchange, expiry, revoke)
-  test_server_config.py  FastMCP wiring smoke tests
-  test_logging.py      JSON formatter
+  test_auth.py             OAuth provider unit tests (register, authorize, complete_setup, exchange, expiry, revoke)
+  test_client.py           HTTP client (pytest-httpx)
+  test_formatters.py       Lean dict projections + post-hoc filter
+  test_live_integration.py Hits the real Pexels API (opt-in via `pytest -m live`)
+  test_logging.py          JSON formatter + HTTPS / MCP_SERVER_URL guard
+  test_schemas.py          Pydantic validation
+  test_server_config.py    FastMCP wiring smoke tests (stateless_http, json_response)
+  test_server_http.py      End-to-end OAuth discovery (RFC 9728 + RFC 8414 + WWW-Authenticate) via httpx.ASGITransport
+  test_setup_flow.py       End-to-end BYOK /setup form (GET/POST, valid key, invalid key, expired session)
+  test_transport.py        ASGI middleware (healthz, rate limit, X-Forwarded-For parsing, pexels_key extractor)
 ```
 
 ## Adding a tool
 
 1. Define a strict Pydantic input model in `schemas.py` (`ConfigDict(extra="forbid")`).
 2. Implement the HTTP call in `client.py` returning `(payload, rate_limit)`.
-3. Implement a projection in `formatters.py` keeping only high-signal fields.
-4. Register the tool in `server.py` with a proper `ToolAnnotations` block. Tools default to read-only / idempotent / open-world.
+3. Implement a projection in `formatters.py` returning a typed `dict` keeping only high-signal fields.
+4. Register the tool in `server.py` with a proper `ToolAnnotations` block. Tools default to read-only / idempotent / open-world. The tool function MUST return a `dict` (FastMCP populates `structuredContent` + serialized text automatically per MCP spec 2025-11-25).
 5. Write the docstring **for an LLM caller**, not a human dev. See [Anthropic's guide](https://www.anthropic.com/engineering/writing-tools-for-agents). Each tool needs: a one-line purpose, **USE WHEN** with concrete examples, **DO NOT USE WHEN**, and a return-shape teaser.
-6. Add at least one happy-path test and one validation test.
+6. Errors raise from the tool body (Pydantic `ValidationError`, `Pexels*Error` from `client.py`). FastMCP marks the `CallToolResult` with `isError=true` per SEP-1303. Do NOT catch and return a string — that would silently mark the result as success.
+7. Add at least one happy-path test and one validation test.
 
 ## What this project will not accept
 

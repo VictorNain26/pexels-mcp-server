@@ -9,7 +9,6 @@ from pexels_mcp_server.schemas import (
     CollectionMediaParams,
     GetPhotoParams,
     Orientation,
-    ResponseFormat,
     SearchPhotosParams,
 )
 
@@ -19,7 +18,6 @@ def test_search_photos_defaults() -> None:
     assert params.query == "dogs"
     assert params.page == 1
     assert params.per_page == 15
-    assert params.response_format == ResponseFormat.JSON
     assert params.orientation is None
 
 
@@ -63,9 +61,14 @@ def test_collection_media_strips_whitespace() -> None:
     assert params.collection_id == "abc123"
 
 
-def test_response_format_enum_round_trip() -> None:
-    params = SearchPhotosParams(query="dogs", response_format=ResponseFormat.JSON)
-    assert params.response_format.value == "json"
+def test_response_format_field_removed_from_schema() -> None:
+    """``response_format`` was dropped in the JSON-only simplification.
+
+    Sending it now must be rejected by ``extra="forbid"`` — the tool
+    surface is JSON-only and the parameter was pure noise in the input
+    schema (extra tokens at conversation init for the LLM)."""
+    with pytest.raises(ValidationError):
+        SearchPhotosParams(query="dogs", response_format="json")  # type: ignore[call-arg]
 
 
 def test_search_photos_accepts_named_color() -> None:
@@ -116,14 +119,6 @@ def test_collection_media_accepts_alphanumeric_with_dashes() -> None:
 
 # --- null coercion (defensive against MCP clients that serialize defaults
 # as `null` instead of omitting the key) ----------------------------------
-
-
-def test_response_format_null_is_coerced_to_default() -> None:
-    """claude.ai web ships ``response_format: null`` in the wild on every
-    tool call. The strict enum used to reject; now it normalizes to the
-    field default (``json``) so the call succeeds."""
-    params = SearchPhotosParams(query="x", response_format=None)  # type: ignore[arg-type]
-    assert params.response_format == ResponseFormat.JSON
 
 
 def test_page_null_is_coerced_to_default() -> None:
