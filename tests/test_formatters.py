@@ -189,6 +189,52 @@ def test_envelope_omits_filter_diagnostics_when_payload_has_none() -> None:
     assert "filter_diagnostics" not in out
 
 
+# --- Output-schema regression (MCP SDK 1.27 emits null for absent optional --
+# --- TypedDict fields; the schema MUST accept that null) -----------------
+
+
+def test_output_schema_accepts_null_for_optional_fields() -> None:
+    """``model_dump(mode="json")`` in the MCP SDK does not pass
+    ``exclude_unset=True``, so optional TypedDict fields land as ``null``
+    in ``structuredContent``. Until the SDK is fixed, our TypedDicts
+    declare optional fields as ``T | None`` so the generated jsonschema
+    accepts that bogus ``null`` (otherwise the call fails with
+    ``"None is not of type 'object'"``)."""
+    import jsonschema
+    from mcp.server.fastmcp.utilities.func_metadata import (
+        _create_model_from_typeddict,
+    )
+
+    from pexels_mcp_server.formatters import (
+        CollectionMediaResult,
+        PhotoListResult,
+        VideoListResult,
+    )
+
+    for typed_dict in (PhotoListResult, VideoListResult, CollectionMediaResult):
+        pydantic_model = _create_model_from_typeddict(typed_dict)
+        schema = pydantic_model.model_json_schema()
+        # Build the same minimal envelope our formatters return when the
+        # upstream Pexels payload carries none of the optional fields.
+        minimal: dict[str, object] = {
+            "page": 1,
+            "per_page": 5,
+            "count": 0,
+            "has_more": False,
+            "photos": [],
+        }
+        if typed_dict is VideoListResult:
+            minimal = {**{k: v for k, v in minimal.items() if k != "photos"}, "videos": []}
+        elif typed_dict is CollectionMediaResult:
+            minimal = {**minimal, "id": None, "videos": []}
+        validated = pydantic_model.model_validate(minimal)
+        dumped = validated.model_dump(mode="json", by_alias=True)
+        # The SDK injects null for unset optional fields; the schema MUST
+        # accept that — otherwise the call fails with
+        # ``Output validation error: None is not of type 'object'``.
+        jsonschema.validate(instance=dumped, schema=schema)
+
+
 # --- filter_by_dimensions: post-hoc filter -------------------------------
 
 
