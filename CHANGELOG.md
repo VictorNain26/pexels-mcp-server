@@ -4,6 +4,10 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ## [Unreleased]
 
+### Changed (UX — 2026-05-19)
+- Access-token TTL bumped from **1 hour** to **30 days** in `auth.py::_ACCESS_TOKEN_TTL_SECONDS`. Re-pasting the Pexels key every hour inside a long conversation was the wrong default: the bound key is dropped when the token expires, so the user had to walk `/setup` again every hour. The threat model for this server (Pexels free tier, user-regenerable keys, no PII / no financial access) makes the longer leak-exposure window acceptable. The in-memory token store is wiped on every Koyeb restart anyway, so the effective TTL is min(30 d, time-until-restart), and Koyeb rolling deploys cap that to about a week in practice.
+- README and PRIVACY docs updated to match.
+
 ### Added (BYOK setup flow + audit fixes — 2026-05-19)
 - **BYOK setup flow** at `GET/POST /setup`. The OAuth `/authorize` handler now parks each request and 302-redirects the user's browser to `/setup?session=<id>` instead of auto-approving. The user pastes their Pexels API key into a short HTML form (`src/pexels_mcp_server/templates/setup.html`); the server validates the key against `api.pexels.com` via the new `PexelsClient.validate_key()` probe; on success the OAuth code is minted with the key bound to it, and `exchange_authorization_code` moves the binding from code → access token. Tool calls resolve the caller's Pexels key by Bearer-token lookup via `PexelsOAuthProvider.pexels_key_for_token()`. This solves the claude.ai-web pain where the previous "send X-Pexels-Api-Key on every call" model required a header that the connector UI does not surface. The header remains accepted as a fallback resolution path for power-user clients (Cursor stdio bridges, scripts).
 - `PexelsClient.validate_key(api_key)` — single-probe authentication test against `GET /v1/curated?per_page=1`. Returns True on 200, False on 401/403, raises PexelsAPIError on persistent 5xx so `/setup` can distinguish "bad key" (user-actionable) from "Pexels is down" (retry-actionable).

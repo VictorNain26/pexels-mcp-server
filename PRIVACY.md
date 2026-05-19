@@ -38,13 +38,13 @@ session store:
   registered OAuth client, and every bound Pexels key — clients re-auth
   transparently on the next call.
 - The Pexels API key, when supplied via the OAuth setup step, lives in
-  process memory bound to the access token for the token's 1-hour lifetime
+  process memory bound to the access token for the token's 30-day lifetime
   and is then released. When supplied via the `X-Pexels-Api-Key` header it
   is read from the request scope on every call and never retained beyond
   the request. There is no per-user key vault, no log entry that contains
   the key.
 - Bearer tokens issued by `/token` live in process memory only, expire after
-  1 hour, and are never logged.
+  30 days (or earlier on process restart), and are never logged.
 - Tool arguments and Pexels responses live in process memory for the
   duration of a single request and are then released.
 
