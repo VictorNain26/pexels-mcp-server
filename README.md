@@ -93,6 +93,7 @@ The hosted deployment **does not hold a default Pexels API key**. Every caller i
 | `HOST` | no | Default `127.0.0.1`; the Docker image flips it to `0.0.0.0`. |
 | `PORT` | no | Default `8000`. Platforms like Koyeb / Fly inject this automatically. |
 | `LOG_LEVEL` | no | Default `INFO`. |
+| `LOG_FORMAT` | no | `text` (default for stdio) or `json` (default for streamable-http). Pick `json` for log-drain ingestion on Koyeb / Fly / Cloud Run. |
 | `PEXELS_API_KEY` | no | Server-side fallback key for callers who omit the `X-Pexels-Api-Key` header. Leave unset for multi-tenant deployments. |
 
 ### Health and readiness probes
@@ -154,6 +155,60 @@ A `pexels_search_photos` call with `query="paris"`, `per_page=1` returns:
 
 Switch to `response_format="markdown"` if you want a one-line human summary instead.
 
+## Three usage examples
+
+### 1. Hero image for a slide deck (with brand color and orientation)
+
+The agent picks the right shot in one tool call by filtering aggressively up front.
+
+```
+pexels_search_photos(
+  query="modern open-plan office workspace",
+  orientation="landscape",
+  size="large",
+  color="blue",
+  per_page=6
+)
+```
+
+The response is a JSON envelope with up to 6 photos. The agent reads each `alt` field, drops the off-topic ones, and returns the best `image_url` plus the mandatory `photographer` / `photographer_url` for attribution.
+
+### 2. B-roll video bounded by duration and resolution
+
+When the user asks for a 10-15 second loop in 4K, filtering on `min_duration`, `max_duration` and `size` avoids scanning hundreds of candidates.
+
+```
+pexels_search_videos(
+  query="aerial drone shot of mountain lake at dawn",
+  orientation="landscape",
+  size="large",
+  per_page=10
+)
+```
+
+Then, since the search tool already trims to the top 3 files by resolution, the agent reads `files[0].url` for the highest-quality MP4 stream and `duration_seconds` to confirm length before committing.
+
+### 3. Visual pick after an ambiguous text shortlist
+
+When the user wants *the right* shot and `alt` text alone can't decide between candidates, the agent passes the shortlisted `thumbnail_url` values into the visual-pick tool. The thumbnails come back inline as `ImageContent` blocks and a vision-capable model picks the winner.
+
+```
+# Step 1: search and read alt text
+photos = pexels_search_photos(query="minimalist desk setup", per_page=4)
+
+# Step 2: extract the 4 thumbnail_url values and call:
+pexels_preview_media(
+  thumbnail_urls=[
+    "https://images.pexels.com/photos/.../medium.jpeg",
+    "https://images.pexels.com/photos/.../medium.jpeg",
+    "https://images.pexels.com/photos/.../medium.jpeg",
+    "https://images.pexels.com/photos/.../medium.jpeg",
+  ]
+)
+```
+
+URLs are checked at validation time: only `https://images.pexels.com` is accepted, every other host is rejected before any network call (no SSRF surface). Each thumbnail is capped at 256 KB and the batch is capped at 6 URLs.
+
 ## Rate limits and attribution
 
 Pexels' free tier is **200 requests/hour** and **20 000 requests/month**. Every tool response surfaces `rate_limit.remaining` so the agent can decide whether to keep calling; a warning is logged below 100 remaining.
@@ -194,7 +249,7 @@ Inspect tool schemas interactively:
 npx @modelcontextprotocol/inspector uv run pexels-mcp-server
 ```
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for how to add a tool. See [SECURITY.md](.github/SECURITY.md) for how to report a vulnerability.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for how to add a tool. See [SECURITY.md](.github/SECURITY.md) for how to report a vulnerability. See [PRIVACY.md](PRIVACY.md) for what the server processes and what it does not store.
 
 ## Compatibility
 
