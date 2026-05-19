@@ -4,6 +4,15 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ## [Unreleased]
 
+### Reverted
+- `DEFAULT_PER_PAGE` 5 → 15. The previous flip was based on an unverified
+  hypothesis ("marketing briefs ask for 3-5"). Reality: when the user
+  precises a number, the LLM passes it through explicitly; when they
+  don't, 15 is the long-standing Pexels default and gives the agent more
+  candidates to filter from. Token savings vs 5 are marginal (~500
+  tokens/call) compared to the other simplifications already in this
+  release. Aligns the default with Pexels' own.
+
 ### Changed (tech-lead token optimization — 2026-05-19) — **BREAKING**
 
 This pass simplifies the MCP surface to JSON-only output and drops the
