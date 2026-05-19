@@ -77,17 +77,15 @@ jobs:
         # cleanly when boot is refused. Catches regressions in __main__.
         run: |
           set -e
-          # HTTP mode without the OAuth env vars must exit code 2 with a
-          # message listing the missing vars (MCP_SERVER_URL + MCP_AUTH_PASSCODE).
+          # HTTP mode without MCP_SERVER_URL must exit code 2.
           docker run --rm \
             -e TRANSPORT=streamable-http \
             pexels-mcp-server:ci 2>&1 \
             | tee /tmp/refuse.log || true
-          grep -q "Missing required env vars in streamable-http mode" /tmp/refuse.log
+          grep -q "Missing required env var in streamable-http mode" /tmp/refuse.log
           grep -q "MCP_SERVER_URL" /tmp/refuse.log
-          grep -q "MCP_AUTH_PASSCODE" /tmp/refuse.log
 
-          # HTTP mode with the OAuth env vars set must boot and write the
+          # HTTP mode with MCP_SERVER_URL set must boot and write the
           # startup line. The container is NOT started with --rm so that
           # `docker logs` keeps working even if the process exits before
           # our assertion runs — otherwise a fast crash deletes the logs
@@ -97,7 +95,6 @@ jobs:
             -e HOST=0.0.0.0 \
             -e PORT=8000 \
             -e MCP_SERVER_URL=http://127.0.0.1:8000 \
-            -e MCP_AUTH_PASSCODE=ci-smoke-passcode \
             pexels-mcp-server:ci
           sleep 5
           docker ps -a --filter name=smoke --format '{{.Status}}'
