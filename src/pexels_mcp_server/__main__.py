@@ -3,8 +3,10 @@
 Reads ``TRANSPORT`` from the environment, configures stderr-only logging
 (stdio transport requires stdout to be JSON-RPC clean), then hands control
 to FastMCP. The hosted HTTP transport additionally wires OAuth 2.1 (RS+AS
-in a single process via the MCP SDK), the ``/login`` form for the human
-passcode step, and the ``X-Pexels-Api-Key`` extractor middleware.
+in a single process via the MCP SDK), the ``/setup`` BYOK form that captures
+the user's Pexels API key during the OAuth flow, and the
+``X-Pexels-Api-Key`` extractor middleware (fallback path for clients that
+inject the key per-request).
 """
 
 from __future__ import annotations
@@ -118,15 +120,18 @@ def _read_positive_int_env(name: str, *, default: int, allow_zero: bool = False)
 
 
 def _validate_http_env() -> None:
-    """Refuse to boot HTTP mode without ``MCP_SERVER_URL``.
+    """Refuse to boot HTTP mode without ``MCP_SERVER_URL`` or with a non-HTTPS one.
 
     The hosted transport needs a publicly reachable URL so the RFC 9728
     Protected Resource Metadata and RFC 8414 Authorization Server Metadata
-    point at the right host. There is no human-in-the-loop secret to gate
-    the flow — authorization is auto-approved and the real authentication
-    of every tool call is the caller's own ``X-Pexels-Api-Key`` header.
+    point at the right host. MCP spec 2025-06-18 §"Communication Security"
+    mandates HTTPS on every authorization-server endpoint; we enforce that
+    here so an operator cannot accidentally ship an http:// URL behind a
+    TLS-terminating proxy that's been misconfigured. The only http://
+    exception is loopback (``127.0.0.1``/``localhost``) for local dev.
     """
-    if not os.environ.get("MCP_SERVER_URL", "").strip():
+    raw = os.environ.get("MCP_SERVER_URL", "").strip()
+    if not raw:
         sys.stderr.write(
             "[pexels-mcp] ERROR Missing required env var in streamable-http mode: "
             "MCP_SERVER_URL. Set it to the public HTTPS URL of this service "
@@ -134,6 +139,21 @@ def _validate_http_env() -> None:
             "issuer_url and the RFC 9728 resource_server_url.\n"
         )
         sys.exit(2)
+    from urllib.parse import urlparse
+
+    parsed = urlparse(raw)
+    if parsed.scheme == "https":
+        return
+    is_loopback = parsed.hostname in {"127.0.0.1", "localhost", "::1"}
+    if parsed.scheme == "http" and is_loopback:
+        return
+    sys.stderr.write(
+        f"[pexels-mcp] ERROR MCP_SERVER_URL='{raw}' is not allowed. MCP spec "
+        "2025-06-18 §Communication Security requires HTTPS on every OAuth "
+        "endpoint. Use 'https://...' in production, or 'http://127.0.0.1:<port>' "
+        "for local development only.\n"
+    )
+    sys.exit(2)
 
 
 def main() -> None:

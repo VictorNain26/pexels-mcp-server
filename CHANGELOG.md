@@ -4,6 +4,24 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ## [Unreleased]
 
+### Added (BYOK setup flow + audit fixes — 2026-05-19)
+- **BYOK setup flow** at `GET/POST /setup`. The OAuth `/authorize` handler now parks each request and 302-redirects the user's browser to `/setup?session=<id>` instead of auto-approving. The user pastes their Pexels API key into a short HTML form (`src/pexels_mcp_server/templates/setup.html`); the server validates the key against `api.pexels.com` via the new `PexelsClient.validate_key()` probe; on success the OAuth code is minted with the key bound to it, and `exchange_authorization_code` moves the binding from code → access token. Tool calls resolve the caller's Pexels key by Bearer-token lookup via `PexelsOAuthProvider.pexels_key_for_token()`. This solves the claude.ai-web pain where the previous "send X-Pexels-Api-Key on every call" model required a header that the connector UI does not surface. The header remains accepted as a fallback resolution path for power-user clients (Cursor stdio bridges, scripts).
+- `PexelsClient.validate_key(api_key)` — single-probe authentication test against `GET /v1/curated?per_page=1`. Returns True on 200, False on 401/403, raises PexelsAPIError on persistent 5xx so `/setup` can distinguish "bad key" (user-actionable) from "Pexels is down" (retry-actionable).
+- `_PendingSetup` dataclass + `_pending_setups` / `_code_to_key` / `_token_to_key` maps on the OAuth provider. Sessions expire after 15 min, codes after 5 min, tokens after 1 h; all three are swept together by the existing once-a-minute reaper.
+- HTTPS enforcement on `MCP_SERVER_URL` in `__main__._validate_http_env`: refuses to boot with a plain-`http://` URL unless the host is loopback (`127.0.0.1` / `localhost` / `::1`). Aligns with MCP spec 2025-06-18 §Communication Security.
+- CI step: `pip-audit --strict` against the lockfile (exported via `uv export`) on every PR. Fails the build on any disclosed CVE in `mcp`, `httpx`, `pydantic`, `uvicorn` or their transitive deps.
+- CI step: `pytest --cov=src/pexels_mcp_server --cov-fail-under=75` so a regression below 75 % coverage fails the build. `__main__.py` is excluded (covered by the docker-build smoke test).
+- `tests/test_server_http.py` — end-to-end ASGI tests via `httpx.ASGITransport` validating the spec-mandated 401 + `WWW-Authenticate: Bearer ... resource_metadata="..."` header on unauthed `POST /mcp`, plus the `/.well-known/oauth-protected-resource` and `/.well-known/oauth-authorization-server` documents.
+- `tests/test_setup_flow.py` — e2e tests for the `/setup` GET (form render, 404 on unknown session) and POST (302 on valid key, 400 with inline error on Pexels-rejected key, 404 on unknown session).
+
+### Changed (BYOK + audit fixes)
+- Tool-key resolution order in `server._resolve_api_key`: (1) BYOK-bound key looked up by the request's Bearer access token, (2) `X-Pexels-Api-Key` header, (3) `pexels_key_ctx` ContextVar, (4) `PEXELS_API_KEY` env var in stdio only.
+- `README.md` now documents the BYOK flow as the primary connect path and demotes the `X-Pexels-Api-Key` header to fallback. The "no secret to type" wording is gone (there *is* one secret — the user's Pexels key — typed once per access-token lifetime).
+- `PRIVACY.md` no longer references the removed `pexels_preview_media` tool, the removed `MCP_AUTH_TOKEN` bearer, or `images.pexels.com`. Describes the BYOK key lifecycle: in-memory only, bound to the access token, dropped on expiry / revocation / restart.
+- `.github/SECURITY.md` threat-model section rewritten to match the current code (OAuth 2.1 + BYOK, rate limiter, DNS rebinding); the stale `pexels_preview_media` paragraph is gone.
+- `CONTRIBUTING.md` project layout entry for `auth.py` now says "+ /setup BYOK form" instead of "+ /login HTML".
+- `__main__.py` docstring mentions `/setup` instead of `/login`.
+
 ### Added (public-MCP polish + audit findings)
 - `rate_limit_middleware` in `transport.py` — sliding-window per source IP, 60 requests/minute by default. Configurable via `MCP_RATE_LIMIT_PER_MINUTE`. Source IP read from `X-Forwarded-For` **from the right minus N hops** (controlled by `MCP_TRUSTED_PROXY_HOPS`, default 1 = "Koyeb LB only"). Prior implementations read the leftmost entry, which is client-controlled and trivially spoofable; the new logic only trusts the part of the chain a known proxy wrote. Returns `429 Too Many Requests` with a spec-compliant `Retry-After` header (RFC 9110 §15.5.20). `/healthz`, `/readyz`, `/.well-known/oauth-protected-resource` and `/.well-known/oauth-authorization-server` are exempt.
 - `MCP_TRUSTED_PROXY_HOPS` env var — number of trusted proxies in front of the app. Default `1` (Koyeb's LB). Set to `2` for Cloudflare-in-front-of-Koyeb; set to `0` to ignore `X-Forwarded-For` entirely (no proxy chain at all).

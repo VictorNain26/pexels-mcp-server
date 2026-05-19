@@ -173,3 +173,49 @@ async def test_client_drops_none_query_params(httpx_mock: HTTPXMock) -> None:
     )
     async with PexelsClient() as client:
         await client.search_photos(api_key="testkey", query="cat", orientation=None, color=None)
+
+
+# --- validate_key (BYOK setup probe) ------------------------------------
+
+
+async def test_validate_key_returns_true_on_200(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(
+        url=f"{BASE_URL}/v1/curated?per_page=1",
+        json={"page": 1, "per_page": 1, "total_results": 0, "photos": []},
+        headers=_rate_headers(),
+        match_headers={"Authorization": "good-key"},
+    )
+    async with PexelsClient() as client:
+        assert await client.validate_key("good-key") is True
+
+
+async def test_validate_key_returns_false_on_401(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(
+        url=f"{BASE_URL}/v1/curated?per_page=1",
+        status_code=401,
+        json={"error": "unauthorized"},
+    )
+    async with PexelsClient() as client:
+        assert await client.validate_key("bad-key") is False
+
+
+async def test_validate_key_returns_false_on_403(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(
+        url=f"{BASE_URL}/v1/curated?per_page=1",
+        status_code=403,
+        json={"error": "forbidden"},
+    )
+    async with PexelsClient() as client:
+        assert await client.validate_key("revoked-key") is False
+
+
+async def test_validate_key_raises_on_persistent_5xx(httpx_mock: HTTPXMock) -> None:
+    """A 5xx from Pexels is a service problem, not a key problem — surface it
+    so the /setup handler can show 'try again in a moment' instead of
+    blaming the user's key."""
+    url = f"{BASE_URL}/v1/curated?per_page=1"
+    httpx_mock.add_response(url=url, status_code=500, json={"error": "boom"})
+    httpx_mock.add_response(url=url, status_code=500, json={"error": "boom"})
+    async with PexelsClient() as client:
+        with pytest.raises(PexelsAPIError):
+            await client.validate_key("any-key")

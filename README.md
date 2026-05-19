@@ -38,20 +38,20 @@ When the agent commits to a pick, it returns the `image_url` (full resolution) p
 
 The server is meant to run as **one hosted HTTPS endpoint** with OAuth 2.1 + RFC 9728 enabled. That is the only supported topology — it works for every MCP HTTP client out there (claude.ai web custom connectors, Claude Desktop remote connectors, Claude Code, the MCP Inspector, future clients). Stdio is still functional and useful for power users who want a local-only setup; see [Local development](#local-development).
 
-### Auth model in one paragraph — and what makes this a *public* MCP
+### Auth model in one paragraph — BYOK during the OAuth flow
 
 The Python process plays both roles defined by the MCP authorization spec: it is the **Resource Server** that holds the nine Pexels tools at `/mcp`, and the **Authorization Server** that issues short-lived Bearer tokens. The MCP Python SDK mounts every well-known endpoint automatically: `/.well-known/oauth-protected-resource` (RFC 9728), `/.well-known/oauth-authorization-server` (RFC 8414), `/authorize`, `/token`, `/register` (RFC 7591 DCR), all with PKCE.
 
-The OAuth flow is **auto-approved**: there is no human consent step, no passcode, no login page. Any MCP client that walks the standard handshake receives a Bearer token. That token is *not* a user identity — it only proves the client navigated the spec-compliant flow that claude.ai (and every other MCP HTTP client) requires before making tool calls.
+The flow is **bring-your-own-key** (BYOK): once the MCP client (claude.ai web, Claude Desktop, Claude Code, MCP Inspector) walks the standard OAuth handshake, the server redirects the user's browser to `/setup`, a short HTML form that asks for a Pexels API key. The user pastes their free key (from <https://www.pexels.com/api/>), the server validates it against `api.pexels.com`, then mints the OAuth authorization code with the key bound to it. The bound key follows the code → token transition, so every subsequent tool call resolves the caller's Pexels key from their own access token — no shared secret on the server, no quota theft between users.
 
-The **real** authentication of every tool call is the caller's own `X-Pexels-Api-Key` header. The server forwards it to `api.pexels.com` and never stores it, so each caller pays their own Pexels quota and the server cannot be abused to consume someone else's quota.
+For power-user clients that prefer the per-request pattern (Cursor stdio bridges, scripts that already manage Pexels keys themselves), the server still accepts an `X-Pexels-Api-Key` HTTP header as a fallback resolution path.
 
 ### Per-call headers (what each MCP client sends)
 
 | Header | When | Purpose |
 |---|---|---|
-| `Authorization: Bearer <access-token>` | always after the OAuth handshake finishes | Validates the token against the in-memory store. The token is issued by `/token` and refreshed transparently by the client on expiry. |
-| `X-Pexels-Api-Key: <user_key>` | required on every tool call | The caller's own Pexels key, used to authenticate the upstream Pexels REST calls. Not stored, not logged. Get one at <https://www.pexels.com/api/>. |
+| `Authorization: Bearer <access-token>` | always after the OAuth handshake finishes | Validates the token against the in-memory store. The token is issued by `/token` and refreshed transparently by the client on expiry. The bound Pexels key is resolved from this token. |
+| `X-Pexels-Api-Key: <user_key>` | **fallback** for clients that skip the BYOK setup | Optional per-request header. Overridden by the BYOK-bound key when both are present. Get a key at <https://www.pexels.com/api/>. |
 | `MCP-Protocol-Version: 2025-06-18` | required by the spec after `initialize` | Tells the server which protocol revision the client speaks. |
 
 ### Server environment variables
@@ -152,16 +152,16 @@ curl -i -X POST "$URL/mcp" \
 
 The `WWW-Authenticate` header on the unauthenticated `/mcp` call is what makes claude.ai pivot into the OAuth flow.
 
-#### 3. Connect any MCP client (no secret to type)
+#### 3. Connect any MCP client (paste your Pexels key once)
 
 | Client | Steps |
 |---|---|
-| **claude.ai web** | Settings → Connectors → Add custom connector → URL `https://<host>/mcp`. Click *Connect* — the OAuth handshake completes automatically (browser flashes briefly and closes). Then add `X-Pexels-Api-Key: <your key>` under Advanced custom headers. |
-| **Claude Desktop** | Settings → Connectors → Add (remote) → same URL. Custom headers tab takes `X-Pexels-Api-Key`. |
-| **Claude Code** | `claude mcp add pexels --transport http https://<host>/mcp --header "X-Pexels-Api-Key: <key>"`. The CLI handles OAuth on first call. |
-| **MCP Inspector** | `npx @modelcontextprotocol/inspector` → paste the URL → it discovers OAuth automatically. |
+| **claude.ai web** | Settings → Connectors → Add custom connector → URL `https://<host>/mcp`. Click *Connect*. A browser tab opens on this server's `/setup` page asking for your Pexels API key — paste it, click *Connect*, and the tab closes automatically. The key is bound to your fresh access token. |
+| **Claude Desktop** | Settings → Connectors → Add (remote) → same URL. Same one-time `/setup` page on first connect; the desktop app handles the OAuth handshake natively. |
+| **Claude Code** | `claude mcp add pexels --transport http https://<host>/mcp`. The CLI opens the browser at `/setup` on first call so you can paste your key. |
+| **MCP Inspector** | `npx @modelcontextprotocol/inspector` → paste the URL → it discovers OAuth automatically and opens `/setup` in the browser. |
 
-If a token expires (default 1 h), the client re-runs the flow transparently. Each caller must provide their own `X-Pexels-Api-Key` — the server forwards it to Pexels and never stores it, so each user pays their own Pexels quota.
+If a token expires (default 1 h), the client re-runs the flow transparently and you'll be asked for the key again. Each caller's key lives only in this server's memory and is dropped when the token expires (or the process restarts). Power-user setups that prefer to inject the key per call can skip `/setup` and send `X-Pexels-Api-Key` as a header on every request instead — the server falls back to that header when no key is bound to the access token.
 
 ## Local development
 
@@ -274,7 +274,7 @@ If you publish assets returned by this server, you must credit the photographer/
 
 ## Tool design notes
 
-- **Spec-compliant auth.** The HTTP transport is an OAuth 2.1 Resource Server *and* Authorization Server in one process, wired through the official MCP Python SDK (`AuthSettings` + `OAuthAuthorizationServerProvider` + `ProviderTokenVerifier`). RFC 9728 Protected Resource Metadata, RFC 8414 Authorization Server Metadata, RFC 7591 Dynamic Client Registration and PKCE are all served by the SDK; the only custom code is the `/login` passcode form.
+- **Spec-compliant auth.** The HTTP transport is an OAuth 2.1 Resource Server *and* Authorization Server in one process, wired through the official MCP Python SDK (`AuthSettings` + `OAuthAuthorizationServerProvider` + `ProviderTokenVerifier`). RFC 9728 Protected Resource Metadata, RFC 8414 Authorization Server Metadata, RFC 7591 Dynamic Client Registration and PKCE are all served by the SDK. The only custom routes are the static landing page at `GET /` and the BYOK setup form at `/setup` that captures the user's Pexels API key during the OAuth flow.
 - **Stateless HTTP by default.** The Streamable HTTP transport runs with `stateless_http=True, json_response=True` so a hosted deployment scales horizontally without sticky sessions. The MCP 2025-06-18 spec keeps `Mcp-Session-Id` as OPTIONAL; opting out is the SDK-recommended posture.
 - **Read-only by construction.** Every tool advertises `readOnlyHint=true`, `destructiveHint=false`, `idempotentHint=true`, `openWorldHint=true`.
 - **Token-lean payloads.** Photo responses drop `liked`, `photographer_id`, `avg_color` and the six per-orientation `src` URLs (keeping just `image_url` and `thumbnail_url`). Video responses keep only the top 3 files by resolution and report `total_files_available` so the agent knows there's more.

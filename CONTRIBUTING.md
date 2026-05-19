@@ -30,7 +30,7 @@ src/pexels_mcp_server/
   __init__.py          version
   __main__.py          CLI entry point, transport selection, OAuth env validation, HTTP middleware wiring
   server.py            FastMCP server, tool registration, OAuth wiring (HTTP mode)
-  auth.py              In-process OAuth Authorization Server (PexelsOAuthProvider) + /login HTML
+  auth.py              In-process OAuth Authorization Server (PexelsOAuthProvider) + /setup BYOK form
   client.py            Async httpx client wrapping the Pexels REST API
   schemas.py           Pydantic v2 input models (extra="forbid")
   formatters.py        Token-lean JSON projections + Markdown bullets

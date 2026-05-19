@@ -70,7 +70,8 @@ async def _lifespan(_server: FastMCP) -> AsyncIterator[AppContext]:
     """Boot a single ``PexelsClient`` for the server lifetime.
 
     The client never stores a Pexels key. The effective key is resolved per
-    tool call via ``_resolve_api_key`` (HTTP header first, env var fallback).
+    tool call via ``_resolve_api_key`` (BYOK binding via OAuth setup first,
+    ``X-Pexels-Api-Key`` header second, env var third in stdio).
     """
     client = PexelsClient()
     logger.info("Pexels client ready (transport managed by FastMCP).")
@@ -86,27 +87,34 @@ def _resolve_api_key(ctx: Context) -> str | None:  # type: ignore[type-arg]
 
     Order of precedence:
 
-    1. The ``X-Pexels-Api-Key`` header on the live HTTP request (read straight
-       from the Starlette ``Request`` exposed by FastMCP). This is the
-       canonical source in HTTP / Streamable-HTTP mode, because FastMCP spawns
-       its session worker at initialize time and would freeze any ContextVar
-       set later by ASGI middleware.
-    2. The ``pexels_key_ctx`` ContextVar populated by ``pexels_key_middleware``
+    1. The BYOK key bound to the request's Bearer access token, set during
+       the OAuth ``/setup`` flow. This is the canonical source for any
+       client (claude.ai web, Claude Desktop, MCP Inspector) that walked
+       the spec-compliant authorization handshake against this server.
+    2. The ``X-Pexels-Api-Key`` header on the live HTTP request — fallback
+       for power-user clients (Cursor stdio bridges, scripts) that prefer
+       to inject the key per call instead of through OAuth.
+    3. The ``pexels_key_ctx`` ContextVar populated by ``pexels_key_middleware``
        in ``stateless_http`` deployments (each request runs in its own task,
        so the var propagates).
-    3. The ``PEXELS_API_KEY`` env var — **stdio mode only**. In HTTP mode we
-       deliberately ignore the env var so a caller who forgets the
-       ``X-Pexels-Api-Key`` header gets an actionable error instead of
+    4. The ``PEXELS_API_KEY`` env var — **stdio mode only**. In HTTP mode we
+       deliberately ignore the env var so a caller who forgets the header
+       and skipped the BYOK setup gets an actionable error instead of
        silently consuming the operator's Pexels quota.
     """
     request = getattr(getattr(ctx, "request_context", None), "request", None)
     if request is not None:
-        header_val = ""
         headers = getattr(request, "headers", None)
         if headers is not None:
+            auth_header = str(headers.get("authorization", "")).strip()
+            if auth_header.lower().startswith("bearer ") and oauth_provider is not None:
+                token = auth_header[7:].strip()
+                bound_key = oauth_provider.pexels_key_for_token(token)
+                if bound_key:
+                    return bound_key
             header_val = str(headers.get("x-pexels-api-key", "")).strip()
-        if header_val:
-            return header_val
+            if header_val:
+                return header_val
 
     # Lazy import keeps stdio boot light.
     from .transport import pexels_key_ctx
@@ -117,8 +125,8 @@ def _resolve_api_key(ctx: Context) -> str | None:  # type: ignore[type-arg]
 
     # Env-var fallback is stdio-only. In HTTP mode, refusing to fall back
     # eliminates the "quota theft" risk: if Bob forgets the X-Pexels-Api-Key
-    # header, his calls fail with "key missing" instead of silently spending
-    # the operator's quota.
+    # header and skipped /setup, his calls fail with "key missing" instead
+    # of silently spending the operator's quota.
     transport = os.environ.get("TRANSPORT", "stdio").strip().lower()
     if transport == "streamable-http":
         return None
@@ -136,9 +144,10 @@ def _build_oauth_settings() -> tuple[PexelsOAuthProvider, AuthSettings] | None:
     entrypoints like ``uvicorn pexels_mcp_server.server:mcp`` that bypass
     ``__main__`` (and therefore bypass ``_validate_http_env``).
 
-    The flow is **auto-approve**: ``PexelsOAuthProvider`` issues codes
-    without a human consent step. The real authentication of each tool call
-    is the caller's own ``X-Pexels-Api-Key`` header forwarded to Pexels.
+    The flow is **BYOK setup**: ``PexelsOAuthProvider`` parks each
+    ``/authorize`` request and redirects the user to the ``/setup`` HTML
+    form where they paste their Pexels API key. The key is bound to the
+    issued access token and resolved on every tool call.
 
     We return the provider and the ``AuthSettings`` only — the SDK derives
     the token verifier from the provider internally via
@@ -263,16 +272,116 @@ if _oauth_settings is not None:
     from importlib.resources import files
 
     from starlette.requests import Request
-    from starlette.responses import HTMLResponse, Response
+    from starlette.responses import HTMLResponse, RedirectResponse, Response
 
-    _LANDING_HTML = (files("pexels_mcp_server") / "templates" / "landing.html").read_text(
-        encoding="utf-8"
-    )
+    _TEMPLATES = files("pexels_mcp_server") / "templates"
+    _LANDING_HTML = (_TEMPLATES / "landing.html").read_text(encoding="utf-8")
+    _SETUP_HTML = (_TEMPLATES / "setup.html").read_text(encoding="utf-8")
 
     @mcp.custom_route("/", methods=["GET"])
     async def _landing(request: Request) -> Response:
         del request  # endpoint signature requires it; we don't use it
         return HTMLResponse(content=_LANDING_HTML)
+
+    def _render_setup(session_id: str, *, error: str | None = None) -> str:
+        """Inject the session id and (optional) error message into setup.html.
+
+        The template uses ``__SESSION__`` / ``__FORM_ACTION__`` placeholders
+        and an ``<!--ERROR_BLOCK-->`` marker so the file stays valid HTML
+        in editors. We escape the error before substitution — the session
+        id is a server-generated ``secrets.token_urlsafe`` value so it
+        does not need HTML-escaping, but we still pass it through escape
+        to keep the rule "every interpolated value is escaped" simple.
+        """
+        from html import escape
+
+        body = _SETUP_HTML.replace("__SESSION__", escape(session_id, quote=True))
+        body = body.replace("__FORM_ACTION__", "/setup")
+        error_html = f'<div class="error">{escape(error)}</div>' if error else ""
+        return body.replace("<!--ERROR_BLOCK-->", error_html)
+
+    @mcp.custom_route("/setup", methods=["GET"])
+    async def _setup_form(request: Request) -> Response:
+        """Render the BYOK key-entry form for a pending /authorize session.
+
+        Hitting /setup without a valid session id is a dead end — there is
+        no parked OAuth request to complete. We return 404 (not 401) so the
+        endpoint cannot be probed to enumerate session ids.
+        """
+        session_id = request.query_params.get("session", "").strip()
+        if not session_id or oauth_provider is None:
+            return HTMLResponse(content="<h1>Setup session not found.</h1>", status_code=404)
+        if oauth_provider.pending_setup(session_id) is None:
+            return HTMLResponse(
+                content="<h1>Setup session expired or unknown.</h1>", status_code=404
+            )
+        return HTMLResponse(content=_render_setup(session_id))
+
+    @mcp.custom_route("/setup", methods=["POST"])
+    async def _setup_submit(request: Request) -> Response:
+        """Validate the submitted Pexels key and finish the OAuth flow.
+
+        Three failure paths the user can recover from:
+
+        - missing/expired session → 404 page (the OAuth flow must be
+          restarted by the MCP client; clicking *Connect* again is enough);
+        - missing key field → re-render the form with an inline error;
+        - Pexels rejects the key (401/403) → re-render with an inline error.
+
+        On success we 302 to the client's redirect URI with code+state
+        appended; the MCP client then exchanges the code at /token and the
+        bound Pexels key follows code → token.
+        """
+        if oauth_provider is None:
+            return HTMLResponse(content="<h1>OAuth is not configured.</h1>", status_code=503)
+        form = await request.form()
+        session_id = str(form.get("session", "")).strip()
+        pexels_key = str(form.get("pexels_key", "")).strip()
+        if not session_id or oauth_provider.pending_setup(session_id) is None:
+            return HTMLResponse(
+                content="<h1>Setup session expired or unknown.</h1>", status_code=404
+            )
+        if not pexels_key:
+            return HTMLResponse(
+                content=_render_setup(session_id, error="Please paste your Pexels API key."),
+                status_code=400,
+            )
+
+        # Validate against api.pexels.com so a typo fails fast with a clear
+        # inline message instead of "tool call failed" much later. We borrow
+        # the lifespan-scoped client by reaching into the FastMCP instance
+        # (the lifespan context is not addressable from a custom_route, so
+        # we instantiate a throwaway client; cost: one TLS handshake).
+        from .client import PexelsAPIError, PexelsClient
+
+        async with PexelsClient() as probe:
+            try:
+                ok = await probe.validate_key(pexels_key)
+            except PexelsAPIError as exc:
+                logger.warning("Pexels reachability check failed during /setup: %s", exc)
+                return HTMLResponse(
+                    content=_render_setup(
+                        session_id,
+                        error="Could not reach Pexels right now. Please try again in a moment.",
+                    ),
+                    status_code=502,
+                )
+        if not ok:
+            return HTMLResponse(
+                content=_render_setup(
+                    session_id,
+                    error="Pexels rejected this key. Double-check it at https://www.pexels.com/api/.",
+                ),
+                status_code=400,
+            )
+
+        try:
+            client_redirect = oauth_provider.complete_setup(session_id, pexels_key)
+        except LookupError:
+            return HTMLResponse(
+                content="<h1>Setup session expired or unknown.</h1>", status_code=404
+            )
+        return RedirectResponse(url=client_redirect, status_code=302)
 else:
     mcp = FastMCP(
         name="pexels-mcp-server",
