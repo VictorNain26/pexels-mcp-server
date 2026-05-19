@@ -15,13 +15,15 @@ COPY --from=ghcr.io/astral-sh/uv:0.7 /uv /uvx /usr/local/bin/
 
 WORKDIR /app
 
-# Copy lockfile + manifest first so `uv sync` is cached across rebuilds when
-# only application code changes.
+# Two-stage copy + sync so the dependency layer is cached independently of
+# source changes. First sync resolves deps from the lockfile only; the second
+# installs the project itself once src/ lands.
 COPY pyproject.toml uv.lock README.md ./
-COPY src ./src
 
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev --no-editable --no-install-project
+
+COPY src ./src
 
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev --no-editable

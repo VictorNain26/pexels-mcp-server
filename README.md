@@ -86,7 +86,8 @@ The hosted deployment **does not hold a default Pexels API key**. Every caller i
 
 | Variable | Required | Description |
 |---|---|---|
-| `MCP_AUTH_TOKEN` | recommended | Shared Bearer token. When set, the `/mcp` endpoint requires `Authorization: Bearer <token>`. When unset, the endpoint is open to anyone who can reach the host. Generate with `openssl rand -hex 32`. |
+| `MCP_AUTH_TOKEN` | **required** in HTTP mode | Shared Bearer token. The `/mcp` endpoint refuses to boot without it; the process exits with code 2. Generate with `openssl rand -hex 32`. Set `MCP_ALLOW_UNAUTHED=1` to override for local development. |
+| `MCP_ALLOW_UNAUTHED` | no | Set to `1` to allow the server to boot without `MCP_AUTH_TOKEN` (development only — never in production). |
 | `MCP_ALLOWED_HOSTS` | no | Comma-separated allowlist for the `Host` header (DNS rebinding protection). Supports the `host:*` wildcard. Unset means accept any Host (Bearer auth is the gate). |
 | `TRANSPORT` | yes (HTTP mode) | Set to `streamable-http`. |
 | `HOST` | no | Default `127.0.0.1`; the Docker image flips it to `0.0.0.0`. |
@@ -161,6 +162,7 @@ If you publish assets returned by this server, you must credit the photographer/
 
 ## Tool design notes
 
+- **Stateless HTTP by default.** The Streamable HTTP transport runs with `stateless_http=True, json_response=True` so a hosted deployment scales horizontally on Koyeb / Fly without sticky sessions. Aligned with the MCP draft spec direction (session IDs removed).
 - **Read-only by construction.** Every tool advertises `readOnlyHint=true`, `destructiveHint=false`, `idempotentHint=true`, `openWorldHint=true`.
 - **Token-lean payloads.** Photo responses drop `liked`, `photographer_id`, `avg_color` and the six per-orientation `src` URLs (keeping just `image_url` and `thumbnail_url`). Video responses keep only the top 3 files by resolution and report `total_files_available` so the agent knows there's more.
 - **Strict inputs.** Every tool argument is validated by Pydantic v2 with `extra="forbid"`; invalid values come back as `Invalid parameters: <field>: <reason>` rather than a raw exception.

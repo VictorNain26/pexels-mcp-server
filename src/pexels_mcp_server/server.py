@@ -139,6 +139,13 @@ mcp: FastMCP = FastMCP(
     name="pexels-mcp-server",
     lifespan=_lifespan,
     transport_security=_build_transport_security(),
+    # Streamable HTTP is run stateless: every request carries its own context,
+    # no Mcp-Session-Id is allocated, the response is one JSON object instead
+    # of an SSE stream. This is the SDK-recommended posture for horizontally
+    # scaled hosted deployments (Koyeb, Fly, Cloud Run) and matches the
+    # direction of the MCP draft spec which is removing session IDs entirely.
+    stateless_http=True,
+    json_response=True,
 )
 
 
