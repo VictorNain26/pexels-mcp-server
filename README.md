@@ -66,7 +66,8 @@ The **real** authentication of every tool call is the caller's own `X-Pexels-Api
 | `PORT` | no | Default `8000`. Platforms like Koyeb / Fly inject this automatically. |
 | `LOG_LEVEL` | no | Default `INFO`. |
 | `LOG_FORMAT` | no | `text` or `json` (default `json` in HTTP mode for log-drain ingestion). |
-| `PEXELS_API_KEY` | no | Server-side fallback key for callers who omit `X-Pexels-Api-Key`. Leave unset for multi-tenant deployments — each caller pays its own Pexels quota. |
+| `MCP_TRUSTED_PROXY_HOPS` | no | Number of trusted proxies in front of the app, default `1` (Koyeb's LB). Used to read the real client IP from `X-Forwarded-For` from the *right* (which is server-controlled) instead of the *left* (which a caller can spoof). Set to `2` if you front Koyeb with Cloudflare; `0` disables `X-Forwarded-For` parsing entirely. |
+| `PEXELS_API_KEY` | **stdio only** | Used by local stdio clients (Claude Desktop, Cursor) to inject their key once at process start. **Ignored in `streamable-http` mode** — callers must always send `X-Pexels-Api-Key` per request. |
 
 ### Rate limiting
 

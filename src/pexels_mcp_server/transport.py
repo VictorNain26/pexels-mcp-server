@@ -127,21 +127,44 @@ class _SlidingWindowLimiter:
             del self._hits[k]
 
 
-def _real_ip(scope: ASGIScope) -> str:
+def _real_ip(scope: ASGIScope, *, trusted_proxy_hops: int = 1) -> str:
     """Extract the real caller IP from the ASGI scope.
 
-    Koyeb fronts every public service with a layer-7 load balancer that sets
-    the ``X-Forwarded-For`` header. The leftmost address in that header is
-    the original client; we trust it because the LB is the only path that
-    can reach this process. Falls back to the socket peer address if the
-    header is absent (covers stdio-mode-but-served-over-HTTP local testing).
+    ``X-Forwarded-For`` is set by every proxy in the chain: each one appends
+    the address it saw the request *come from*. The **leftmost** entry is
+    therefore client-controlled (an attacker can put any string in their own
+    request) and must not be trusted. The **rightmost** entry is the IP the
+    last proxy saw, which is always one of *our* proxies and is therefore
+    safe. Skipping ``trusted_proxy_hops`` entries from the right gives the
+    address one hop *before* that proxy — the actual client when we trust the
+    full chain in front of the app.
+
+    On Koyeb the load balancer appends one entry, so ``trusted_proxy_hops=1``
+    (the default) yields the client IP. Cloudflare in front of Koyeb is two
+    hops; configure ``MCP_TRUSTED_PROXY_HOPS`` accordingly.
+
+    Falls back to the socket peer address if the header is absent or the chain
+    is shorter than expected.
     """
-    headers: list[tuple[bytes, bytes]] = scope.get("headers", [])
-    for name, value in headers:
-        if name.lower() == b"x-forwarded-for":
-            forwarded = value.decode("latin-1", errors="ignore").split(",")[0].strip()
-            if forwarded:
-                return forwarded
+    if trusted_proxy_hops < 1:
+        # Treat all of X-Forwarded-For as untrusted: ignore the header.
+        forwarded_chain: list[str] = []
+    else:
+        forwarded_chain = []
+        headers: list[tuple[bytes, bytes]] = scope.get("headers", [])
+        for name, value in headers:
+            if name.lower() == b"x-forwarded-for":
+                forwarded_chain = [
+                    part.strip()
+                    for part in value.decode("latin-1", errors="ignore").split(",")
+                    if part.strip()
+                ]
+                break
+    # The IP we want sits at position (len - hops) from the left. Anything
+    # to its right is one of our trusted proxies; anything to its left is
+    # client-supplied and unreliable.
+    if forwarded_chain and len(forwarded_chain) >= trusted_proxy_hops:
+        return forwarded_chain[len(forwarded_chain) - trusted_proxy_hops]
     client = scope.get("client")
     if isinstance(client, tuple | list) and client:
         return str(client[0])
@@ -163,13 +186,18 @@ _RATE_LIMIT_EXEMPT_PATHS: frozenset[str] = frozenset(
 )
 
 
-def rate_limit_middleware(app: ASGIApp, *, max_per_minute: int) -> ASGIApp:
+def rate_limit_middleware(
+    app: ASGIApp, *, max_per_minute: int, trusted_proxy_hops: int = 1
+) -> ASGIApp:
     """Cap incoming HTTP requests at ``max_per_minute`` per source IP.
 
     Beyond the cap the middleware returns ``429 Too Many Requests`` with a
     ``Retry-After`` header per RFC 9110 §15.5.20. Probes and OAuth discovery
     are exempt; everything else (``/mcp``, ``/authorize``, ``/token``,
     ``/register``, the landing page) counts against the per-IP budget.
+
+    ``trusted_proxy_hops`` controls how the source IP is read from
+    ``X-Forwarded-For`` — see ``_real_ip``. Default is 1 (Koyeb's LB only).
     """
     limiter = _SlidingWindowLimiter(max_hits=max_per_minute, window_seconds=60.0)
 
@@ -181,7 +209,7 @@ def rate_limit_middleware(app: ASGIApp, *, max_per_minute: int) -> ASGIApp:
         if path in _RATE_LIMIT_EXEMPT_PATHS:
             await app(scope, receive, send)
             return
-        ip = _real_ip(scope)
+        ip = _real_ip(scope, trusted_proxy_hops=trusted_proxy_hops)
         allowed, retry_after = await limiter.hit(ip)
         if not allowed:
             logger.warning("rate limit hit by %s on %s, retry in %ds", ip, path, retry_after)

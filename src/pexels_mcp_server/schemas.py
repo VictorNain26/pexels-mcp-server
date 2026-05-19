@@ -148,6 +148,9 @@ class Pagination(_StrictModel):
     page: int = Field(
         default=DEFAULT_PAGE,
         ge=1,
+        # Pexels caps at ~roughly this anyway; the upper bound stops a caller
+        # from wasting an outbound HTTP round-trip on a 999_999_999 page.
+        le=10_000,
         description="Page number, starting at 1.",
     )
     per_page: int = Field(

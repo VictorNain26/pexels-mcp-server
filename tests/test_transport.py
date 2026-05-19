@@ -115,19 +115,56 @@ async def test_pexels_key_middleware_skips_non_http_scope() -> None:
 # ----------------------------------------------------------- rate limiter
 
 
-def test_real_ip_prefers_x_forwarded_for() -> None:
+def test_real_ip_returns_rightmost_minus_hops() -> None:
+    """With 1 trusted proxy hop (the default), we trust the rightmost entry
+    minus 1 — i.e. the IP the trusted proxy itself saw. The leftmost entry
+    is client-controlled and must never be trusted as-is."""
+    # Chain says: original client was 203.0.113.5, but our trusted proxy
+    # (Koyeb LB) saw the request coming from 10.0.0.1.
     scope = _http_scope("/mcp", [(b"x-forwarded-for", b"203.0.113.5, 10.0.0.1")])
-    assert _real_ip(scope) == "203.0.113.5"
+    assert _real_ip(scope, trusted_proxy_hops=1) == "10.0.0.1"
 
 
-def test_real_ip_falls_back_to_socket() -> None:
-    # No X-Forwarded-For header — we trust the socket peer (local dev).
-    assert _real_ip(_http_scope("/mcp")) == "1.2.3.4"
+def test_real_ip_two_trusted_hops_skips_two_from_right() -> None:
+    """Cloudflare in front of Koyeb is two trusted hops; the client IP is
+    then the entry two positions from the right."""
+    # client_ip -> cloudflare -> koyeb_lb -> us
+    scope = _http_scope(
+        "/mcp",
+        [(b"x-forwarded-for", b"203.0.113.5, 198.51.100.7, 10.0.0.1")],
+    )
+    assert _real_ip(scope, trusted_proxy_hops=2) == "198.51.100.7"
+
+
+def test_real_ip_single_entry_with_one_hop() -> None:
+    """Most common Koyeb shape: one hop, one entry — that entry is the
+    real client IP that Koyeb's LB observed."""
+    scope = _http_scope("/mcp", [(b"x-forwarded-for", b"203.0.113.5")])
+    assert _real_ip(scope, trusted_proxy_hops=1) == "203.0.113.5"
+
+
+def test_real_ip_falls_back_to_socket_when_xff_absent() -> None:
+    assert _real_ip(_http_scope("/mcp"), trusted_proxy_hops=1) == "1.2.3.4"
+
+
+def test_real_ip_falls_back_to_socket_when_chain_shorter_than_hops() -> None:
+    """If the chain is shorter than the configured hops the header is
+    unreliable; fall back to the socket peer rather than picking a
+    client-controlled value."""
+    scope = _http_scope("/mcp", [(b"x-forwarded-for", b"203.0.113.5")])
+    assert _real_ip(scope, trusted_proxy_hops=3) == "1.2.3.4"
+
+
+def test_real_ip_zero_hops_ignores_header() -> None:
+    """trusted_proxy_hops=0 means the operator does not trust X-Forwarded-For
+    at all (no proxy in front of us)."""
+    scope = _http_scope("/mcp", [(b"x-forwarded-for", b"203.0.113.5")])
+    assert _real_ip(scope, trusted_proxy_hops=0) == "1.2.3.4"
 
 
 def test_real_ip_returns_unknown_without_xff_or_client() -> None:
     scope = {"type": "http", "path": "/mcp", "headers": [], "client": None}
-    assert _real_ip(scope) == "unknown"
+    assert _real_ip(scope, trusted_proxy_hops=1) == "unknown"
 
 
 def test_limiter_constructor_rejects_invalid_args() -> None:
