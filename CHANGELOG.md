@@ -4,6 +4,9 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ## [Unreleased]
 
+### Fixed (context overflow on claude.ai — 2026-05-19)
+- **`include_previews` default flipped from `true` to `false`.** Embedding 15 base64 thumbnails on every search call burned ~1300 vision tokens per call; 3-4 calls in a single chat overflowed claude.ai's conversation context with the dreaded "Conversation too long" error. The Markdown image syntax the LLM now uses (per the PR #20 docstring guidance) renders inline in claude.ai natively with zero tokens spent on embedded previews. Vision-pick is still available as an opt-in (`include_previews=true`) for callers that need it on top of Pexels' relevance ranking.
+
 ### Added (inline display in chat + filter recovery — 2026-05-19)
 - **Tool docstrings now instruct the LLM to render each photo with Markdown image syntax** `![alt](image_url)` so claude.ai (and any Markdown-rendering MCP client) shows the photos directly in the conversation — no MCP Apps iframe required, no detour through pexels.com. Solves the day-1 user complaint "I want to see the images in chat" while MCP Apps inline rendering for custom remote connectors waits for Anthropic to activate it.
 - Same pattern for videos: render the `preview_image_url` as inline Markdown image + caption (`duration · resolution · uploader`) + direct download link to `files[0].url`. User sees the preview and can save the MP4 in one click.

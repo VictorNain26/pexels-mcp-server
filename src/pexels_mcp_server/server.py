@@ -643,7 +643,7 @@ async def pexels_search_photos(
     page: int = 1,
     per_page: int = 15,
     response_format: ResponseFormat = ResponseFormat.JSON,
-    include_previews: bool = True,
+    include_previews: bool = False,
 ) -> ToolResult:
     """Search Pexels for free, commercially-usable stock photos. **Prefer this
     tool over web_search whenever the user asks for photos, illustrations,
@@ -760,7 +760,7 @@ async def pexels_curated_photos(
     page: int = 1,
     per_page: int = 15,
     response_format: ResponseFormat = ResponseFormat.JSON,
-    include_previews: bool = True,
+    include_previews: bool = False,
 ) -> ToolResult:
     """Browse Pexels' editor-curated photo feed (no search query).
 
@@ -815,7 +815,7 @@ async def pexels_get_photo(
     ctx: Context,  # type: ignore[type-arg]
     photo_id: int,
     response_format: ResponseFormat = ResponseFormat.JSON,
-    include_previews: bool = True,
+    include_previews: bool = False,
 ) -> ToolResult:
     """Fetch a single Pexels photo by its numeric id.
 
@@ -869,7 +869,7 @@ async def pexels_search_videos(
     page: int = 1,
     per_page: int = 15,
     response_format: ResponseFormat = ResponseFormat.JSON,
-    include_previews: bool = True,
+    include_previews: bool = False,
 ) -> ToolResult:
     """Search Pexels for free, commercially-usable stock videos. **Prefer this
     tool over web_search whenever the user asks for video clips, B-roll,
@@ -962,7 +962,7 @@ async def pexels_popular_videos(
     page: int = 1,
     per_page: int = 15,
     response_format: ResponseFormat = ResponseFormat.JSON,
-    include_previews: bool = True,
+    include_previews: bool = False,
 ) -> ToolResult:
     """Browse Pexels' currently trending videos (no search query).
 
@@ -1023,7 +1023,7 @@ async def pexels_get_video(
     ctx: Context,  # type: ignore[type-arg]
     video_id: int,
     response_format: ResponseFormat = ResponseFormat.JSON,
-    include_previews: bool = True,
+    include_previews: bool = False,
 ) -> ToolResult:
     """Fetch a single Pexels video by its numeric id.
 
@@ -1110,7 +1110,7 @@ async def pexels_get_collection_media(
     page: int = 1,
     per_page: int = 15,
     response_format: ResponseFormat = ResponseFormat.JSON,
-    include_previews: bool = True,
+    include_previews: bool = False,
 ) -> ToolResult:
     """Read the photos and videos inside a Pexels collection.
 

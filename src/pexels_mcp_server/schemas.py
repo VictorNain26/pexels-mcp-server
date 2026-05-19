@@ -239,15 +239,31 @@ class Pagination(_StrictModel):
 
 # Standalone field definition reused by every photo/video schema. Carries
 # the per-call switch that toggles inline ``ImageContent`` previews.
+#
+# Default is False as of 2026-05-19: embedding 15 base64 thumbnails per
+# call burns ~1300 vision tokens x N tool calls and quickly fills the
+# claude.ai conversation context (users report "Conversation too long"
+# errors after 3-4 search calls in one chat). The Markdown image syntax
+# the tool docstring instructs the LLM to use (``![alt](image_url)``)
+# delivers the same inline-display UX without the tokens — claude.ai
+# renders external images natively from Markdown.
+#
+# Opt in (``include_previews=true``) when the agent really needs to do
+# a vision-based pick on top of Pexels' relevance ranking.
 def _include_previews_field() -> Any:
     return Field(
-        default=True,
+        default=False,
         description=(
-            "When true (default), the server fetches the medium thumbnail "
-            "for each result from images.pexels.com and embeds it as an "
-            "MCP ImageContent block so vision-capable clients render the "
-            "image inline. Set to false to get the JSON envelope only "
-            "(saves bandwidth and vision tokens for bulk operations)."
+            "When true, the server fetches the medium thumbnail for each "
+            "result from images.pexels.com and embeds it as an MCP "
+            "ImageContent block so the model can vision-pick on top of "
+            "Pexels' relevance ranking. Default false: 15 base64 "
+            "thumbnails per call (~1300 vision tokens) fills the chat "
+            "context fast and is not needed for the user-visible inline "
+            "display — that is delivered by the LLM rendering "
+            "`![alt](image_url)` Markdown in its response, which "
+            "claude.ai renders natively without any tokens spent on "
+            "embedded previews."
         ),
     )
 
