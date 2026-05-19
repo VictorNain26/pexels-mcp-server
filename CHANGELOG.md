@@ -4,6 +4,11 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ## [Unreleased]
 
+### Added (public-MCP polish)
+- `rate_limit_middleware` in `transport.py` — sliding-window per source IP, 60 requests/minute by default. Configurable via `MCP_RATE_LIMIT_PER_MINUTE`. Source IP read from `X-Forwarded-For` (set by Koyeb's load balancer) with a fallback to the socket peer. Returns `429 Too Many Requests` with a spec-compliant `Retry-After` header (RFC 9110 §15.5.20) when the cap is hit. `/healthz`, `/readyz`, `/.well-known/oauth-protected-resource` and `/.well-known/oauth-authorization-server` are exempt so platform probes and discovery clients are never throttled. 11 new unit tests cover the limiter and the middleware paths.
+- Public landing page at `GET /` (replaces the previous 404 on the root). Served via `@mcp.custom_route` — the SDK's documented hook for non-MCP Starlette endpoints. The page explains what the server is, the URL to plug into claude.ai, the requirement to supply your own Pexels API key, and links back to the GitHub repo. Outside the OAuth gate so anyone can read it.
+- `SUBMIT.md` — tracks the submission status to the Anthropic Connector Directory. Lists the official form URL ([clau.de/mcp-directory-submission](https://clau.de/mcp-directory-submission)), the required checklist (security, docs, privacy, branding), per-field pre-filled answers, common rejection reasons and how this repo addresses each.
+
 ### Breaking (public-MCP variant)
 - The OAuth flow is now **auto-approved**: there is no `/login` page, no shared passcode, no human consent step. Anyone with a Pexels API key can connect any MCP HTTP client. The Bearer token issued by `/token` only proves the client navigated the spec-compliant handshake every MCP HTTP client runs unconditionally; the real authentication of every tool call is the caller's own `X-Pexels-Api-Key` header forwarded to `api.pexels.com`.
 - **Removed env var**: `MCP_AUTH_PASSCODE`. Drop it from your hosted deployment.

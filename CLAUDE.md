@@ -58,7 +58,7 @@ client.py       Async httpx wrapper for Pexels REST; one retry on 5xx with jitte
 formatters.py   Token-lean JSON projections + Markdown summaries + rate_limit envelope
 
 ASGI helpers (off the main path):
-transport.py    healthz_middleware (/healthz, /readyz) and pexels_key_middleware (X-Pexels-Api-Key)
+transport.py    healthz_middleware (/healthz, /readyz), rate_limit_middleware (60/min/IP sliding window, configurable via MCP_RATE_LIMIT_PER_MINUTE), and pexels_key_middleware (X-Pexels-Api-Key)
 ```
 
 ### OAuth wiring (HTTP mode)
@@ -109,10 +109,10 @@ Orthogonal to OAuth. `server._resolve_api_key()` resolves the Pexels API key per
 Built outside-in in `__main__.main()`:
 
 ```text
-healthz -> pexels_key -> FastMCP (which itself wraps /mcp with RequireAuthMiddleware)
+healthz -> rate_limit -> pexels_key -> FastMCP (which itself wraps /mcp with RequireAuthMiddleware)
 ```
 
-Healthz and readyz short-circuit before any auth (platform probes don't trigger 401 noise). `pexels_key_middleware` extracts `X-Pexels-Api-Key` into a ContextVar before the tool handler runs. The Bearer token validation and OAuth route mounting are owned by the SDK — do **not** add a hand-rolled bearer middleware here.
+Outermost first per ASGI: `healthz` answers before any other middleware so platform probes never count against the rate-limit budget. `rate_limit` is the soft DoS guard (60/min/IP by default, sliding window, exempts probes + OAuth discovery). `pexels_key_middleware` extracts `X-Pexels-Api-Key` into a ContextVar before the tool handler runs. The Bearer token validation and OAuth route mounting are owned by the SDK — do **not** add a hand-rolled bearer middleware here.
 
 DNS rebinding protection is **off by default** (`MCP_ALLOWED_HOSTS` unset → `enable_dns_rebinding_protection=False`); OAuth Bearer validation is the gate. On Koyeb, set `MCP_ALLOWED_HOSTS={{ KOYEB_PUBLIC_DOMAIN }}` to re-enable it on the known public host.
 

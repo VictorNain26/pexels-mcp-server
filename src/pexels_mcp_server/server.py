@@ -214,6 +214,100 @@ if _oauth_settings is not None:
         auth_server_provider=_auth_provider,
         auth=_auth_settings,
     )
+
+    # Public landing page at GET /. Replaces the default 404 on the root so
+    # anyone who opens the bare URL sees what this service is and how to
+    # plug it into their MCP client. Served outside the OAuth gate via the
+    # SDK's @mcp.custom_route, which is the documented way to add non-MCP
+    # endpoints (used here as an OAuth-flow companion: clients sometimes
+    # hit the root during discovery).
+    from starlette.requests import Request
+    from starlette.responses import HTMLResponse, Response
+
+    _LANDING_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>Pexels MCP server</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        body {{
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+            background: #0d0d0d;
+            color: #e8e8e8;
+            max-width: 720px;
+            margin: 0 auto;
+            padding: 48px 24px;
+            line-height: 1.5;
+        }}
+        h1 {{ font-size: 24px; margin: 0 0 8px 0; }}
+        h2 {{ font-size: 16px; margin: 32px 0 8px 0; color: #ccc; }}
+        p, li {{ font-size: 14px; color: #bbb; }}
+        code {{
+            background: #1a1a1a;
+            border: 1px solid #2a2a2a;
+            border-radius: 4px;
+            padding: 2px 6px;
+            font-size: 13px;
+            color: #e8e8e8;
+        }}
+        pre {{
+            background: #1a1a1a;
+            border: 1px solid #2a2a2a;
+            border-radius: 6px;
+            padding: 12px;
+            overflow-x: auto;
+            font-size: 13px;
+        }}
+        a {{ color: #4a9eff; text-decoration: none; }}
+        a:hover {{ text-decoration: underline; }}
+        .badge {{
+            display: inline-block;
+            background: #1a3a1a;
+            color: #7fce7f;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 500;
+        }}
+    </style>
+</head>
+<body>
+    <h1>Pexels MCP server <span class="badge">PUBLIC</span></h1>
+    <p>Free, read-only Pexels photo and video search exposed as nine Model Context Protocol tools. Plug it into claude.ai web, Claude Desktop, Claude Code or any MCP HTTP client and your agent can search photos, videos and collections.</p>
+
+    <h2>Connect from claude.ai web</h2>
+    <ol>
+        <li>Settings → Connectors → <strong>Add custom connector</strong>.</li>
+        <li>URL: <code>{server_url}/mcp</code></li>
+        <li>Click <strong>Connect</strong> — the OAuth handshake completes automatically.</li>
+        <li>Open <strong>Advanced settings</strong> on the connector, add this custom header:
+            <pre>X-Pexels-Api-Key: &lt;your own free Pexels API key&gt;</pre>
+            Get one at <a href="https://www.pexels.com/api/" target="_blank" rel="noopener">pexels.com/api</a>.</li>
+        <li>Activate the connector in a conversation and try:
+            <em>"Find me three landscape photos of Paris on Pexels"</em>.</li>
+    </ol>
+
+    <h2>Your Pexels quota stays yours</h2>
+    <p>Your <code>X-Pexels-Api-Key</code> header is forwarded to <code>api.pexels.com</code> on every call and never stored on the server. Every request you make counts against <em>your</em> Pexels quota (200/hour free tier), not anyone else's.</p>
+
+    <h2>Tools exposed</h2>
+    <ul>
+        <li><code>pexels_search_photos</code>, <code>pexels_curated_photos</code>, <code>pexels_get_photo</code></li>
+        <li><code>pexels_search_videos</code>, <code>pexels_popular_videos</code>, <code>pexels_get_video</code></li>
+        <li><code>pexels_list_featured_collections</code>, <code>pexels_get_my_collections</code>, <code>pexels_get_collection_media</code></li>
+    </ul>
+
+    <h2>Source &amp; docs</h2>
+    <p><a href="https://github.com/VictorNain26/pexels-mcp-server" target="_blank" rel="noopener">github.com/VictorNain26/pexels-mcp-server</a> — MIT licensed.</p>
+</body>
+</html>"""
+
+    @mcp.custom_route("/", methods=["GET"])
+    async def _landing(request: Request) -> Response:
+        del request  # endpoint signature requires it; we don't use it
+        assert oauth_provider is not None
+        return HTMLResponse(content=_LANDING_HTML.format(server_url=oauth_provider._server_url))
 else:
     mcp = FastMCP(
         name="pexels-mcp-server",
