@@ -12,7 +12,8 @@ import re
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic_core import PydanticUndefined
 
 from .constants import (
     DEFAULT_PAGE,
@@ -124,9 +125,38 @@ SUPPORTED_LOCALES: tuple[str, ...] = (
 
 
 class _StrictModel(BaseModel):
-    """Base for every input model: forbid unknown fields, strip strings."""
+    """Base for every input model: forbid unknown fields, strip strings,
+    and coerce explicit ``null`` on a defaulted field to the field's default.
+
+    The null-coercion is there because some MCP clients (claude.ai web is
+    one) serialize every schema field on every tool call, including
+    optional ones with a default — they send ``"response_format": null``
+    instead of omitting the key. Strict pydantic validation rejects the
+    null and the tool call fails with a confusing "Input should be
+    'markdown' or 'json'" error.
+
+    With this validator, ``{"response_format": null}`` is normalized to
+    ``{"response_format": "json"}`` (the field's default) before the type
+    check runs, so the call succeeds. Required fields (no default) and
+    truly-nullable fields (``Foo | None = None``) are untouched: the
+    former still fail validation on null, the latter still accept null.
+    """
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_nulls_to_defaults(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        for name, info in cls.model_fields.items():
+            if name not in data or data[name] is not None:
+                continue
+            if info.default is not PydanticUndefined:
+                data[name] = info.default
+            elif info.default_factory is not None:
+                data[name] = info.default_factory()  # type: ignore[call-arg]
+        return data
 
 
 def _validate_locale(value: str | None) -> str | None:

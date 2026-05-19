@@ -4,6 +4,11 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ## [Unreleased]
 
+### Fixed (null-on-defaulted-field — 2026-05-19)
+- Tool calls failed with `Input should be 'markdown' or 'json' [type=enum, input_value=None]` when an MCP client serialized `response_format` (or any other field with a non-None default) as `null` instead of omitting it. claude.ai web does exactly this — every schema field is sent on every tool call, defaults included, with `null` for "use the default". Strict Pydantic rejected on the type mismatch.
+- `_StrictModel` now declares a `@model_validator(mode="before")` that normalizes `null` to the field's default for any field whose default isn't already `None`. Required fields and explicitly-nullable fields (e.g. `orientation: Orientation | None = None`) are untouched.
+- 5 new tests in `tests/test_schemas.py` covering `response_format=null`, `include_previews=null`, `page=null`/`per_page=null`, the no-op case `orientation=null`, and the negative case `query=null` (required → still fails).
+
 ### Added (inline previews + vision pick — 2026-05-19)
 - **Inline thumbnails on every search/list tool.** `pexels_search_photos`, `pexels_curated_photos`, `pexels_get_photo`, `pexels_search_videos`, `pexels_popular_videos`, `pexels_get_video` and `pexels_get_collection_media` now return a list of MCP content blocks: the JSON envelope as the first `TextContent`, then per-result `TextContent` caption + `ImageContent` (medium thumbnail fetched from `images.pexels.com`). Vision-capable MCP clients render the images inline; an agent can do a true vision-based pick instead of relying on the `alt` text alone. Opt-out per call with `include_previews=false` for bulk / token-sensitive workloads.
 - New module `src/pexels_mcp_server/previews.py` implementing `PreviewFetcher`: bounded-concurrency (semaphore 12), per-fetch timeout (5 s), oversize cap (500 KB), MIME-type whitelist (`image/*`), host allowlist (`images.pexels.com` only — SSRF surface), FIFO LRU cache (256 entries, 10 min TTL). Failures are best-effort: a missing or oversize thumbnail degrades to caption-only, the rest of the response still ships.
