@@ -64,12 +64,18 @@ def _extract_bearer(scope: ASGIScope) -> str | None:
 
 
 def healthz_middleware(app: ASGIApp) -> ASGIApp:
-    """Short-circuit ``GET /healthz`` so platform health probes do not exercise
-    the MCP transport (which would 405 on a plain GET).
+    """Short-circuit ``GET /healthz`` and ``GET /readyz`` so platform probes
+    do not exercise the MCP transport (which would 405 on a plain GET).
+
+    ``/healthz`` is the liveness probe: returns 200 as soon as the process is
+    up. ``/readyz`` is the readiness probe: same shape today (the server has
+    no async warmup), exposed separately so Koyeb / Fly can wire each probe
+    to its own path and we can grow the readiness check later (e.g. ping
+    Pexels) without affecting liveness semantics.
     """
 
     async def wrapped(scope: ASGIScope, receive: ASGIReceive, send: ASGISend) -> None:
-        if scope.get("type") == "http" and scope.get("path") == "/healthz":
+        if scope.get("type") == "http" and scope.get("path") in ("/healthz", "/readyz"):
             await _send_text(send, 200, b"ok")
             return
         await app(scope, receive, send)
@@ -125,15 +131,20 @@ def bearer_auth_middleware(app: ASGIApp, expected_token: str) -> ASGIApp:
         if scope.get("type") != "http":
             await app(scope, receive, send)
             return
-        if scope.get("path") == "/healthz":
+        if scope.get("path") in ("/healthz", "/readyz"):
             await app(scope, receive, send)
             return
         presented = _extract_bearer(scope)
         if presented is None or not hmac.compare_digest(presented.encode("utf-8"), expected):
+            # Log the remote IP only (drop the port) to limit per-connection
+            # identifiers in platform log stores. Port adds nothing diagnostic
+            # for an external attacker.
+            client = scope.get("client")
+            client_ip = client[0] if isinstance(client, tuple | list) and client else "?"
             logger.warning(
                 "rejected unauthenticated request to %s from %s",
                 scope.get("path"),
-                scope.get("client"),
+                client_ip,
             )
             await _send_text(send, 401, b"unauthorized\n")
             return

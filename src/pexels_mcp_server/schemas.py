@@ -23,6 +23,10 @@ from .constants import (
 )
 
 _HEX_COLOR_RE = re.compile(r"^[0-9A-Fa-f]{6}$")
+# Pexels collection IDs are short alphanumeric strings (with optional dashes
+# and underscores). Anchoring the regex prevents path-injection patterns like
+# "../photos" landing in URL paths.
+_COLLECTION_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
 class ResponseFormat(str, Enum):
@@ -127,6 +131,20 @@ class _StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
 
+def _validate_locale(value: str | None) -> str | None:
+    """Reject locales not present in the documented Pexels allowlist.
+
+    The Pexels search endpoint silently ignores unknown locales rather than
+    erroring, which means a malformed value just degrades relevance without
+    feedback. Failing fast on an unknown locale keeps the agent honest.
+    """
+    if value is None:
+        return None
+    if value not in SUPPORTED_LOCALES:
+        raise ValueError(f"locale must be one of {', '.join(SUPPORTED_LOCALES)}; got {value!r}.")
+    return value
+
+
 class Pagination(_StrictModel):
     """Shared pagination knobs."""
 
@@ -186,6 +204,11 @@ class SearchPhotosParams(Pagination):
             "color must be one of " + ", ".join(sorted(named)) + " or a 6-digit hex without '#'."
         )
 
+    @field_validator("locale")
+    @classmethod
+    def _check_locale(cls, value: str | None) -> str | None:
+        return _validate_locale(value)
+
 
 class CuratedPhotosParams(Pagination):
     """Inputs for ``pexels_curated_photos``."""
@@ -212,6 +235,11 @@ class SearchVideosParams(Pagination):
         description="BCP-47 locale (e.g. en-US, fr-FR).",
     )
     response_format: ResponseFormat = Field(default=ResponseFormat.JSON)
+
+    @field_validator("locale")
+    @classmethod
+    def _check_locale(cls, value: str | None) -> str | None:
+        return _validate_locale(value)
 
 
 class PopularVideosParams(Pagination):
@@ -262,6 +290,13 @@ class CollectionMediaParams(Pagination):
         description="Sort by creation date (asc or desc).",
     )
     response_format: ResponseFormat = Field(default=ResponseFormat.JSON)
+
+    @field_validator("collection_id")
+    @classmethod
+    def _check_collection_id(cls, value: str) -> str:
+        if not _COLLECTION_ID_RE.match(value):
+            raise ValueError("collection_id must contain only letters, digits, '-' and '_'.")
+        return value
 
 
 class PreviewMediaParams(_StrictModel):

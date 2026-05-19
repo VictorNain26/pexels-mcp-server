@@ -30,6 +30,15 @@ updates:
       prefix: "chore"
       include: "scope"
     groups:
+      runtime-dependencies:
+        patterns:
+          - "mcp*"
+          - "httpx"
+          - "pydantic*"
+          - "uvicorn"
+        update-types:
+          - "minor"
+          - "patch"
       dev-dependencies:
         patterns:
           - "pytest*"
