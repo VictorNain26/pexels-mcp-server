@@ -11,7 +11,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     UV_LINK_MODE=copy \
     UV_PYTHON_DOWNLOADS=never
 
-COPY --from=ghcr.io/astral-sh/uv:0.7 /uv /uvx /usr/local/bin/
+# Pin the uv image to a content-addressable digest so the build toolchain is
+# reproducible and immune to a compromised re-tag of the floating 0.7 tag.
+# Dependabot bumps this with the same `0.7` major-line tag in front, keeping
+# the digest fresh.
+COPY --from=ghcr.io/astral-sh/uv:0.7@sha256:629240833dd25d03949509fc01ceff56ae74f5e5f0fd264da634dd2f70e9cc70 /uv /uvx /usr/local/bin/
 
 WORKDIR /app
 
