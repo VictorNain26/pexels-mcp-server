@@ -114,7 +114,7 @@
 <body>
     <header>
         <h1>Pexels MCP server <span class="badge">PUBLIC</span></h1>
-        <p class="tagline">Free Pexels photo and video search exposed as a Model Context Protocol server. Nine read-only tools, OAuth 2.1, bring-your-own Pexels API key.</p>
+        <p class="tagline">Free Pexels photo and video search exposed as a Model Context Protocol server. Five read-only tools, OAuth 2.1, bring-your-own Pexels API key.</p>
     </header>
 
     <main>
@@ -122,26 +122,24 @@
         <ol>
             <li>Settings &rarr; Connectors &rarr; <strong>Add custom connector</strong>.</li>
             <li>URL: <code id="mcp-url">loading...</code></li>
-            <li>Click <strong>Connect</strong> &mdash; the OAuth handshake completes automatically (browser flashes briefly, no input).</li>
-            <li>Open <strong>Advanced settings</strong> on the connector and add this custom header:
-                <pre><code>X-Pexels-Api-Key: &lt;your own free Pexels API key&gt;</code></pre>
-                Get one at <a href="https://www.pexels.com/api/" target="_blank" rel="noopener">pexels.com/api</a>.
-            </li>
+            <li>Click <strong>Connect</strong>. A browser tab opens on this server's <code>/setup</code> page asking for your Pexels API key.</li>
+            <li>Paste your free Pexels API key (get one at <a href="https://www.pexels.com/api/" target="_blank" rel="noopener">pexels.com/api</a>, takes 30 seconds, no credit card) and click <strong>Connect</strong>. The tab closes automatically.</li>
             <li>Activate the connector in a conversation, try: <em>&laquo; Find me three landscape photos of Paris on Pexels &raquo;</em>.</li>
         </ol>
 
         <h2>Your Pexels quota stays yours</h2>
-        <p>Your <code>X-Pexels-Api-Key</code> header is forwarded to <code>api.pexels.com</code> on every call and never stored on the server. Every request you make counts against <em>your</em> Pexels quota (200/hour on the free tier), not anyone else's.</p>
+        <p>Your Pexels API key is bound to your OAuth access token and forwarded to <code>api.pexels.com</code> on every tool call. It lives only in this server's memory, never on disk, and is dropped on token expiry (30 days) or on the next server restart. Every request counts against <em>your</em> Pexels quota (200/hour on the free tier), not anyone else's.</p>
 
         <h2>Tools exposed</h2>
         <ul>
-            <li><strong>Photos</strong>: <code>pexels_search_photos</code>, <code>pexels_curated_photos</code>, <code>pexels_get_photo</code></li>
-            <li><strong>Videos</strong>: <code>pexels_search_videos</code>, <code>pexels_popular_videos</code>, <code>pexels_get_video</code></li>
-            <li><strong>Collections</strong>: <code>pexels_list_featured_collections</code>, <code>pexels_get_my_collections</code>, <code>pexels_get_collection_media</code></li>
+            <li><strong>Photos</strong>: <code>pexels_search_photos</code>, <code>pexels_get_photo</code></li>
+            <li><strong>Videos</strong>: <code>pexels_search_videos</code>, <code>pexels_get_video</code></li>
+            <li><strong>Collections</strong>: <code>pexels_get_collection_media</code></li>
         </ul>
+        <p>Every tool is read-only and returns structured JSON with photographer / uploader credit so the agent can render the user-facing answer with the mandatory attribution.</p>
 
         <h2>Other MCP clients</h2>
-        <p>Same URL works with Claude Desktop (Settings &rarr; Connectors &rarr; Add), Claude Code (<code>claude mcp add</code> with <code>--transport http</code>), and the official MCP Inspector. OAuth discovery is automatic via <a href="https://datatracker.ietf.org/doc/html/rfc9728" target="_blank" rel="noopener">RFC 9728</a> protected-resource metadata.</p>
+        <p>Same URL works with Claude Desktop (Settings &rarr; Connectors &rarr; Add), Claude Code (<code>claude mcp add</code> with <code>--transport http</code>), and the official MCP Inspector. OAuth discovery is automatic via <a href="https://datatracker.ietf.org/doc/html/rfc9728" target="_blank" rel="noopener">RFC 9728</a> protected-resource metadata. Power-user setups can skip <code>/setup</code> by sending the Pexels key as an <code>X-Pexels-Api-Key</code> header on every call instead.</p>
     </main>
 
     <footer>

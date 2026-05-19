@@ -1,8 +1,11 @@
 """FastMCP server exposing the Pexels API to MCP-aware AI agents.
 
-Five read-only tools (search photos / get photo / search videos / get video
-/ get collection media). Outputs are minimal JSON envelopes — the agent
-formats the user-facing answer (e.g. as Markdown links) itself.
+Five read-only tools: search photos / get photo / search videos / get video
+/ get collection media. Each tool returns a structured ``dict`` — the SDK
+auto-populates ``structuredContent`` (validated against ``outputSchema``)
+and a serialized JSON ``TextContent`` block for backwards compat. Errors
+raise; FastMCP wraps them with ``isError=true`` per MCP spec 2025-11-25
+(SEP-1303).
 
 Pexels free tier: 25 000 requests/hour, 20 000 requests/month. The server
 logs a warning to stderr when fewer than 100 requests remain.
@@ -15,7 +18,7 @@ import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, NoReturn
 
 from mcp.server.auth.settings import AuthSettings, ClientRegistrationOptions
 from mcp.server.fastmcp import Context, FastMCP
@@ -24,14 +27,14 @@ from mcp.types import ToolAnnotations
 from pydantic import AnyHttpUrl, ValidationError
 
 from .auth import MCP_SCOPE, PexelsOAuthProvider
-from .client import (
-    PexelsAPIError,
-    PexelsAuthError,
-    PexelsClient,
-    PexelsRateLimitError,
-)
+from .client import PexelsAPIError, PexelsClient
 from .constants import MAX_PER_PAGE
 from .formatters import (
+    CollectionMediaResult,
+    PhotoListResult,
+    SinglePhotoResult,
+    SingleVideoResult,
+    VideoListResult,
     filter_by_dimensions,
     format_collection_media,
     format_photo_list,
@@ -46,15 +49,24 @@ from .schemas import (
     GetVideoParams,
     Orientation,
     PhotoSize,
-    ResponseFormat,
     SearchPhotosParams,
     SearchVideosParams,
     SortOrder,
     VideoSize,
     parse_aspect_ratio,
 )
+from .transport import pexels_key_ctx
 
 logger = logging.getLogger("pexels_mcp_server.server")
+
+
+_SERVER_INSTRUCTIONS = (
+    "Search Pexels for free, commercially-usable stock photos and videos. "
+    "Five read-only tools: pexels_search_photos, pexels_get_photo, "
+    "pexels_search_videos, pexels_get_video, pexels_get_collection_media. "
+    "Every result includes photographer/uploader credit — surface it to the "
+    "user per the Pexels licence."
+)
 
 
 @dataclass
@@ -69,8 +81,8 @@ async def _lifespan(_server: FastMCP) -> AsyncIterator[AppContext]:
     """Boot one PexelsClient for the server lifetime.
 
     The client never stores a Pexels key. The effective key per call is
-    resolved via ``_resolve_api_key`` (BYOK via OAuth setup → header →
-    env var in stdio).
+    resolved via ``_resolve_api_key`` (BYOK via OAuth setup → per-request
+    header → env var in stdio).
     """
     client = PexelsClient()
     logger.info("Pexels client ready.")
@@ -82,27 +94,24 @@ async def _lifespan(_server: FastMCP) -> AsyncIterator[AppContext]:
 
 
 def _resolve_api_key(ctx: Context) -> str | None:  # type: ignore[type-arg]
-    """Resolve the Pexels API key.
+    """Resolve the Pexels API key for the current call.
 
-    Order: (1) BYOK-bound key on the request's Bearer token, (2)
-    X-Pexels-Api-Key header, (3) pexels_key_ctx ContextVar, (4)
-    PEXELS_API_KEY env var (stdio only).
+    Priority:
+      1. Pexels key bound to the request's Bearer access token (BYOK
+         via /setup form).
+      2. ``X-Pexels-Api-Key`` request header (read once by the ASGI
+         middleware into ``pexels_key_ctx``).
+      3. ``PEXELS_API_KEY`` env var (stdio transport only).
     """
-    request = getattr(getattr(ctx, "request_context", None), "request", None)
-    if request is not None:
-        headers = getattr(request, "headers", None)
+    if oauth_provider is not None:
+        request = getattr(getattr(ctx, "request_context", None), "request", None)
+        headers = getattr(request, "headers", None) if request is not None else None
         if headers is not None:
             auth_header = str(headers.get("authorization", "")).strip()
-            if auth_header.lower().startswith("bearer ") and oauth_provider is not None:
-                token = auth_header[7:].strip()
-                bound = oauth_provider.pexels_key_for_token(token)
+            if auth_header.lower().startswith("bearer "):
+                bound = oauth_provider.pexels_key_for_token(auth_header[7:].strip())
                 if bound:
                     return bound
-            header_val = str(headers.get("x-pexels-api-key", "")).strip()
-            if header_val:
-                return header_val
-
-    from .transport import pexels_key_ctx
 
     cv_val = pexels_key_ctx.get()
     if cv_val:
@@ -148,7 +157,7 @@ oauth_provider: PexelsOAuthProvider | None = (
 
 
 def _build_transport_security() -> TransportSecuritySettings:
-    """Configure DNS rebinding protection per MCP spec 2025-06-18."""
+    """Configure DNS rebinding protection per MCP spec 2025-11-25."""
     allowed_hosts_env = os.environ.get("MCP_ALLOWED_HOSTS", "").strip()
     if allowed_hosts_env:
         return TransportSecuritySettings(
@@ -174,6 +183,7 @@ if _oauth_settings is not None:
     _auth_provider, _auth_settings = _oauth_settings
     mcp: FastMCP = FastMCP(
         name="pexels-mcp-server",
+        instructions=_SERVER_INSTRUCTIONS,
         lifespan=_lifespan,
         transport_security=_build_transport_security(),
         stateless_http=True,
@@ -261,6 +271,7 @@ if _oauth_settings is not None:
 else:
     mcp = FastMCP(
         name="pexels-mcp-server",
+        instructions=_SERVER_INSTRUCTIONS,
         lifespan=_lifespan,
         transport_security=_build_transport_security(),
         stateless_http=True,
@@ -281,15 +292,21 @@ def _client(ctx: Context) -> PexelsClient:  # type: ignore[type-arg]
     return app_ctx.client
 
 
-def _format_error(exc: Exception) -> str:
-    """Render an exception as a tool-facing error string."""
-    if isinstance(exc, ValidationError):
-        return "Invalid parameters: " + "; ".join(
-            f"{'.'.join(str(p) for p in err['loc'])}: {err['msg']}" for err in exc.errors()
-        )
-    if isinstance(exc, PexelsAuthError | PexelsRateLimitError | PexelsAPIError):
-        return f"Error: {exc}"
-    return f"Unexpected error: {exc.__class__.__name__}: {exc}"
+def _raise_invalid_params(exc: ValidationError) -> NoReturn:
+    """Flatten a Pydantic ValidationError into one actionable LLM line.
+
+    FastMCP catches the raised exception and surfaces it as
+    ``CallToolResult(isError=true, content=[TextContent(text=...)])`` per
+    MCP spec 2025-11-25 (SEP-1303). Pydantic's default repr is multi-line
+    and noisy — we project it down to ``Invalid parameters: field: msg``
+    so the model gets one actionable string. Pexels-side errors
+    (``PexelsAuthError``, ``PexelsRateLimitError``, ``PexelsAPIError``)
+    already carry agent-actionable messages and are allowed to propagate.
+    """
+    msg = "Invalid parameters: " + "; ".join(
+        f"{'.'.join(str(p) for p in err['loc'])}: {err['msg']}" for err in exc.errors()
+    )
+    raise ValueError(msg) from exc
 
 
 def _has_post_hoc_filter(params: Any) -> bool:
@@ -370,8 +387,7 @@ async def pexels_search_photos(
     aspect_ratio: str | None = None,
     page: int = 1,
     per_page: int = 15,
-    response_format: ResponseFormat = ResponseFormat.JSON,
-) -> str:
+) -> PhotoListResult:
     """Search free, commercially-usable stock photos on Pexels.
 
     USE WHEN the user asks for photos / illustrations / visuals for any
@@ -389,13 +405,13 @@ async def pexels_search_photos(
     ``"1:1"``, ``"9:16"``, ±5%). When any post-hoc filter is set the
     server oversamples up to 4x ``per_page`` (cap 80) before filtering.
 
-    Returns a minimal JSON envelope: ``{page, per_page, count, has_more,
-    next_page?, total_results?, filter_diagnostics?, photos:[{id, alt,
-    page_url, photographer, photographer_url, width, height, image_url}]}``.
-    Hand back ``image_url`` as a Markdown link in your answer so the user
-    can click to view/download; always credit ``photographer`` per Pexels
-    licence. If ``filter_diagnostics`` is present, the filter wiped the
-    page — retry without ``aspect_ratio`` before widening the query.
+    Returns ``{page, per_page, count, has_more, next_page?, total_results?,
+    filter_diagnostics?, photos:[{id, alt, page_url, photographer,
+    photographer_url, width, height, image_url}]}``. Hand back ``image_url``
+    as a Markdown link in your answer so the user can click to view/download;
+    always credit ``photographer`` per Pexels licence. If
+    ``filter_diagnostics`` is present, the filter wiped the page — retry
+    without ``aspect_ratio`` before widening the query.
     """
     try:
         params = SearchPhotosParams(
@@ -409,22 +425,21 @@ async def pexels_search_photos(
             aspect_ratio=aspect_ratio,
             page=page,
             per_page=per_page,
-            response_format=response_format,
         )
-        payload, _ = await _client(ctx).search_photos(
-            api_key=_resolve_api_key(ctx),
-            query=params.query,
-            orientation=params.orientation.value if params.orientation else None,
-            size=params.size.value if params.size else None,
-            color=params.color,
-            locale=params.locale,
-            page=params.page,
-            per_page=_fetch_per_page(params),
-        )
-        _apply_filters(payload, params, items_key="photos")
-        return format_photo_list(payload, params.response_format.value)
-    except Exception as exc:
-        return _format_error(exc)
+    except ValidationError as exc:
+        _raise_invalid_params(exc)
+    payload, _ = await _client(ctx).search_photos(
+        api_key=_resolve_api_key(ctx),
+        query=params.query,
+        orientation=params.orientation.value if params.orientation else None,
+        size=params.size.value if params.size else None,
+        color=params.color,
+        locale=params.locale,
+        page=params.page,
+        per_page=_fetch_per_page(params),
+    )
+    _apply_filters(payload, params, items_key="photos")
+    return format_photo_list(payload)
 
 
 @mcp.tool(
@@ -435,23 +450,24 @@ async def pexels_search_photos(
 async def pexels_get_photo(
     ctx: Context,  # type: ignore[type-arg]
     photo_id: int,
-    response_format: ResponseFormat = ResponseFormat.JSON,
-) -> str:
+) -> SinglePhotoResult:
     """Fetch one Pexels photo by numeric id.
 
     USE WHEN you already have a Pexels photo id (from a previous search
-    or extracted from a pexels.com URL) and need the canonical record.
+      response, or extracted from a pexels.com URL ending in ``-<id>``).
+    DO NOT USE for discovery — for that, call ``pexels_search_photos``
+      with a query. Don't pass guessed / made-up ids; Pexels returns 404.
 
     Returns ``{photo: {id, alt, page_url, photographer, photographer_url,
     width, height, image_url}}``. Hand ``image_url`` to the user as a
     Markdown link; credit ``photographer``.
     """
     try:
-        params = GetPhotoParams(photo_id=photo_id, response_format=response_format)
-        payload, _ = await _client(ctx).get_photo(params.photo_id, api_key=_resolve_api_key(ctx))
-        return format_single_photo(payload, params.response_format.value)
-    except Exception as exc:
-        return _format_error(exc)
+        params = GetPhotoParams(photo_id=photo_id)
+    except ValidationError as exc:
+        _raise_invalid_params(exc)
+    payload, _ = await _client(ctx).get_photo(params.photo_id, api_key=_resolve_api_key(ctx))
+    return format_single_photo(payload)
 
 
 @mcp.tool(
@@ -470,8 +486,7 @@ async def pexels_search_videos(
     aspect_ratio: str | None = None,
     page: int = 1,
     per_page: int = 15,
-    response_format: ResponseFormat = ResponseFormat.JSON,
-) -> str:
+) -> VideoListResult:
     """Search free, commercially-usable stock videos on Pexels.
 
     USE WHEN the user asks for video clips, B-roll, reels, hero loops,
@@ -498,21 +513,20 @@ async def pexels_search_videos(
             aspect_ratio=aspect_ratio,
             page=page,
             per_page=per_page,
-            response_format=response_format,
         )
-        payload, _ = await _client(ctx).search_videos(
-            api_key=_resolve_api_key(ctx),
-            query=params.query,
-            orientation=params.orientation.value if params.orientation else None,
-            size=params.size.value if params.size else None,
-            locale=params.locale,
-            page=params.page,
-            per_page=_fetch_per_page(params),
-        )
-        _apply_filters(payload, params, items_key="videos")
-        return format_video_list(payload, params.response_format.value)
-    except Exception as exc:
-        return _format_error(exc)
+    except ValidationError as exc:
+        _raise_invalid_params(exc)
+    payload, _ = await _client(ctx).search_videos(
+        api_key=_resolve_api_key(ctx),
+        query=params.query,
+        orientation=params.orientation.value if params.orientation else None,
+        size=params.size.value if params.size else None,
+        locale=params.locale,
+        page=params.page,
+        per_page=_fetch_per_page(params),
+    )
+    _apply_filters(payload, params, items_key="videos")
+    return format_video_list(payload)
 
 
 @mcp.tool(
@@ -523,20 +537,24 @@ async def pexels_search_videos(
 async def pexels_get_video(
     ctx: Context,  # type: ignore[type-arg]
     video_id: int,
-    response_format: ResponseFormat = ResponseFormat.JSON,
-) -> str:
+) -> SingleVideoResult:
     """Fetch one Pexels video by numeric id.
+
+    USE WHEN you already have a Pexels video id (from a previous search
+      response, or extracted from a pexels.com URL ending in ``-<id>``).
+    DO NOT USE for discovery — for that, call ``pexels_search_videos``
+      with a query. Don't pass guessed / made-up ids; Pexels returns 404.
 
     Returns ``{video: {id, page_url, duration_seconds, width, height,
     uploader_name, uploader_url, video_url, quality}}``. Hand
     ``video_url`` to the user as a Markdown link; credit ``uploader_name``.
     """
     try:
-        params = GetVideoParams(video_id=video_id, response_format=response_format)
-        payload, _ = await _client(ctx).get_video(params.video_id, api_key=_resolve_api_key(ctx))
-        return format_single_video(payload, params.response_format.value)
-    except Exception as exc:
-        return _format_error(exc)
+        params = GetVideoParams(video_id=video_id)
+    except ValidationError as exc:
+        _raise_invalid_params(exc)
+    payload, _ = await _client(ctx).get_video(params.video_id, api_key=_resolve_api_key(ctx))
+    return format_single_video(payload)
 
 
 @mcp.tool(
@@ -554,13 +572,16 @@ async def pexels_get_collection_media(
     aspect_ratio: str | None = None,
     page: int = 1,
     per_page: int = 15,
-    response_format: ResponseFormat = ResponseFormat.JSON,
-) -> str:
+) -> CollectionMediaResult:
     """Read the photos + videos inside a Pexels collection.
 
-    USE WHEN you already have a collection id (Pexels URL ends with it).
-    Filter to photos-only or videos-only with ``type``. Post-hoc filters
-    (``min_width``, ``min_height``, ``aspect_ratio``) apply to both.
+    USE WHEN you already have a collection id (Pexels URL ends with it,
+      e.g. ``9j5dhpu`` in ``pexels.com/collections/9j5dhpu``). Filter to
+      photos-only or videos-only with ``type``. Post-hoc filters
+      (``min_width``, ``min_height``, ``aspect_ratio``) apply to both.
+    DO NOT USE for discovery — Pexels has no public "list all collections"
+      endpoint; the agent must already know the id from a user-supplied
+      URL or a previous turn.
 
     Returns ``{id, page, per_page, count, has_more, next_page?,
     total_results?, photos:[...], videos:[...]}`` with the same per-item
@@ -576,17 +597,16 @@ async def pexels_get_collection_media(
             aspect_ratio=aspect_ratio,
             page=page,
             per_page=per_page,
-            response_format=response_format,
         )
-        payload, _ = await _client(ctx).get_collection_media(
-            api_key=_resolve_api_key(ctx),
-            collection_id=params.collection_id,
-            type=params.type.value if params.type else None,
-            sort=params.sort.value if params.sort else None,
-            page=params.page,
-            per_page=_fetch_per_page(params),
-        )
-        _apply_filters(payload, params, items_key="media")
-        return format_collection_media(payload, params.response_format.value)
-    except Exception as exc:
-        return _format_error(exc)
+    except ValidationError as exc:
+        _raise_invalid_params(exc)
+    payload, _ = await _client(ctx).get_collection_media(
+        api_key=_resolve_api_key(ctx),
+        collection_id=params.collection_id,
+        type=params.type.value if params.type else None,
+        sort=params.sort.value if params.sort else None,
+        page=params.page,
+        per_page=_fetch_per_page(params),
+    )
+    _apply_filters(payload, params, items_key="media")
+    return format_collection_media(payload)

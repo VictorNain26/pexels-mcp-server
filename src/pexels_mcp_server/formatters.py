@@ -1,28 +1,132 @@
-"""JSON projections for Pexels REST payloads.
+"""JSON projections + typed envelopes for Pexels REST payloads.
 
-The shape stays deliberately minimal: every field we expose has a clear
+Every tool returns a ``TypedDict`` so FastMCP can compute a real
+``outputSchema`` (concrete fields, not just ``{type: object}``). The SDK
+populates both ``structuredContent`` (machine-readable, validated against
+the schema) and a TextContent block with the serialized JSON (backwards
+compat for clients that don't yet read structured output).
+
+The shape stays deliberately minimal: every field exposed has a clear
 purpose for the LLM (alt for filtering, image_url for the download link
-it will hand back to the user, photographer + photographer_url for the
+the agent hands back to the user, photographer + photographer_url for the
 attribution line Pexels licence requires). No thumbnail variants, no
-rate-limit chrome, no narrative captions — the tool returns just enough
-JSON for the agent to format the user-visible answer itself.
+rate-limit chrome, no narrative captions.
 """
 
 from __future__ import annotations
 
-import json
-from typing import Any
-
-from .constants import PEXELS_ATTRIBUTION
-
-_ATTRIBUTION_FOOTER = f"\n\n---\n{PEXELS_ATTRIBUTION}\n"
+from typing import Any, TypedDict, cast
 
 
-def _safe(value: Any, default: str = "") -> str:
-    return str(value) if value is not None else default
+class PhotoProjection(TypedDict):
+    """Minimal LLM-actionable shape for a Pexels photo."""
+
+    id: int | None
+    alt: str | None
+    page_url: str | None
+    photographer: str | None
+    photographer_url: str | None
+    width: int | None
+    height: int | None
+    image_url: str | None
 
 
-def photo_to_json(photo: dict[str, Any]) -> dict[str, Any]:
+class VideoProjection(TypedDict):
+    """Minimal LLM-actionable shape for a Pexels video (top file only)."""
+
+    id: int | None
+    page_url: str | None
+    duration_seconds: int | None
+    width: int | None
+    height: int | None
+    uploader_name: str | None
+    uploader_url: str | None
+    video_url: str | None
+    quality: str | None
+
+
+class FilterDiagnostics(TypedDict):
+    """Diagnostic block surfaced when a post-hoc filter wiped every candidate."""
+
+    applied_filters: dict[str, Any]
+    pre_filter_count: int
+    post_filter_count: int
+    suggestion: str
+
+
+class _SearchListBase(TypedDict):
+    """Required pagination fields shared by every search/list envelope."""
+
+    page: int
+    per_page: int
+    count: int
+    has_more: bool
+
+
+# Per-tool intermediate bases carry the always-present ``items_key`` field
+# as ``Required``. Python 3.10 lacks ``typing.Required`` so we use the
+# subclass pattern: required keys are declared in a parent TypedDict with
+# ``total=True``, optional keys in a child with ``total=False``. Clients
+# reading the generated ``outputSchema`` see both ``photos``/``videos``
+# and the pagination fields under ``required``.
+
+
+class _PhotoListRequired(_SearchListBase):
+    photos: list[PhotoProjection]
+
+
+class PhotoListResult(_PhotoListRequired, total=False):
+    """``pexels_search_photos`` return envelope. Optional fields are only
+    emitted when the upstream payload carries them (``total_results``,
+    ``next_page``) or the post-hoc filter wiped the page
+    (``filter_diagnostics``)."""
+
+    total_results: int
+    next_page: int
+    filter_diagnostics: FilterDiagnostics
+
+
+class _VideoListRequired(_SearchListBase):
+    videos: list[VideoProjection]
+
+
+class VideoListResult(_VideoListRequired, total=False):
+    """``pexels_search_videos`` return envelope."""
+
+    total_results: int
+    next_page: int
+    filter_diagnostics: FilterDiagnostics
+
+
+class _CollectionMediaRequired(_SearchListBase):
+    id: str | None
+    photos: list[PhotoProjection]
+    videos: list[VideoProjection]
+
+
+class CollectionMediaResult(_CollectionMediaRequired, total=False):
+    """``pexels_get_collection_media`` return envelope. ``photos`` and
+    ``videos`` are always present (possibly empty) so the agent can
+    iterate both lists unconditionally."""
+
+    total_results: int
+    next_page: int
+    filter_diagnostics: FilterDiagnostics
+
+
+class SinglePhotoResult(TypedDict):
+    """``pexels_get_photo`` return envelope."""
+
+    photo: PhotoProjection
+
+
+class SingleVideoResult(TypedDict):
+    """``pexels_get_video`` return envelope."""
+
+    video: VideoProjection
+
+
+def photo_to_json(photo: dict[str, Any]) -> PhotoProjection:
     """Project a Pexels photo to the minimal LLM-actionable shape."""
     src = photo.get("src") or {}
     return {
@@ -37,7 +141,7 @@ def photo_to_json(photo: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def video_to_json(video: dict[str, Any]) -> dict[str, Any]:
+def video_to_json(video: dict[str, Any]) -> VideoProjection:
     """Project a Pexels video, keeping only the top file by resolution."""
     user = video.get("user") or {}
     files = video.get("video_files") or []
@@ -94,43 +198,31 @@ def _envelope(
     return out
 
 
-def format_photo_list(payload: dict[str, Any], response_format: str) -> str:
-    photos = payload.get("photos") or []
-    envelope = _envelope(payload, items_key="photos", items=photos, media_projector=photo_to_json)
-    if response_format == "json":
-        return json.dumps(envelope, ensure_ascii=False, separators=(",", ":"))
-    header = f"**Pexels photos** — {envelope.get('total_results', '?')} total, page {envelope['page']} ({envelope['count']} shown)"
-    body = (
-        "\n".join(
-            f"- #{_safe(p.get('id'))} — {_safe(p.get('alt'), '(no alt)')} — "
-            f"by [{_safe(p.get('photographer'))}]({_safe(p.get('photographer_url'))}) "
-            f"— {_safe(p.get('width'))}x{_safe(p.get('height'))} — {_safe(p.get('image_url'))}"
-            for p in photos
-        )
-        or "_No results._"
+def format_photo_list(payload: dict[str, Any]) -> PhotoListResult:
+    return cast(
+        PhotoListResult,
+        _envelope(
+            payload,
+            items_key="photos",
+            items=payload.get("photos") or [],
+            media_projector=photo_to_json,
+        ),
     )
-    return f"{header}\n\n{body}{_ATTRIBUTION_FOOTER}"
 
 
-def format_video_list(payload: dict[str, Any], response_format: str) -> str:
-    videos = payload.get("videos") or []
-    envelope = _envelope(payload, items_key="videos", items=videos, media_projector=video_to_json)
-    if response_format == "json":
-        return json.dumps(envelope, ensure_ascii=False, separators=(",", ":"))
-    header = f"**Pexels videos** — {envelope.get('total_results', '?')} total, page {envelope['page']} ({envelope['count']} shown)"
-    body = (
-        "\n".join(
-            f"- #{_safe(v.get('id'))} — {_safe(v.get('duration'), '?')}s "
-            f"{_safe(v.get('width'))}x{_safe(v.get('height'))} — "
-            f"{_safe((v.get('user') or {}).get('name'))} — {_safe(v.get('url'))}"
-            for v in videos
-        )
-        or "_No results._"
+def format_video_list(payload: dict[str, Any]) -> VideoListResult:
+    return cast(
+        VideoListResult,
+        _envelope(
+            payload,
+            items_key="videos",
+            items=payload.get("videos") or [],
+            media_projector=video_to_json,
+        ),
     )
-    return f"{header}\n\n{body}{_ATTRIBUTION_FOOTER}"
 
 
-def format_collection_media(payload: dict[str, Any], response_format: str) -> str:
+def format_collection_media(payload: dict[str, Any]) -> CollectionMediaResult:
     media = payload.get("media") or []
     photos = [m for m in media if m.get("type") == "Photo"]
     videos = [m for m in media if m.get("type") == "Video"]
@@ -139,7 +231,7 @@ def format_collection_media(payload: dict[str, Any], response_format: str) -> st
     total = payload.get("total_results")
     next_page_url = payload.get("next_page")
     has_more = bool(next_page_url)
-    envelope: dict[str, Any] = {
+    out: dict[str, Any] = {
         "id": payload.get("id"),
         "page": page,
         "per_page": per_page,
@@ -149,56 +241,21 @@ def format_collection_media(payload: dict[str, Any], response_format: str) -> st
         "videos": [video_to_json(v) for v in videos],
     }
     if total is not None:
-        envelope["total_results"] = total
+        out["total_results"] = total
     if has_more:
-        envelope["next_page"] = page + 1
+        out["next_page"] = page + 1
     diagnostics = payload.get("filter_diagnostics")
     if diagnostics:
-        envelope["filter_diagnostics"] = diagnostics
-    if response_format == "json":
-        return json.dumps(envelope, ensure_ascii=False, separators=(",", ":"))
-    header = (
-        f"**Pexels collection {_safe(payload.get('id'), '(unknown)')}** — "
-        f"{_safe(total, '?')} total, page {page} ({envelope['count']} shown)"
-    )
-    lines: list[str] = []
-    for p in photos:
-        lines.append(
-            f"- photo #{_safe(p.get('id'))} — {_safe(p.get('alt'), '(no alt)')} — "
-            f"by {_safe(p.get('photographer'))}"
-        )
-    for v in videos:
-        user = v.get("user") or {}
-        lines.append(
-            f"- video #{_safe(v.get('id'))} — {_safe(v.get('duration'))}s — by {_safe(user.get('name'))}"
-        )
-    body = "\n".join(lines) or "_No results._"
-    return f"{header}\n\n{body}{_ATTRIBUTION_FOOTER}"
+        out["filter_diagnostics"] = diagnostics
+    return cast(CollectionMediaResult, out)
 
 
-def format_single_photo(payload: dict[str, Any], response_format: str) -> str:
-    if response_format == "json":
-        return json.dumps({"photo": photo_to_json(payload)}, ensure_ascii=False)
-    p = photo_to_json(payload)
-    return (
-        f"- #{_safe(p['id'])} — {_safe(p['alt'], '(no alt)')} — "
-        f"by [{_safe(p['photographer'])}]({_safe(p['photographer_url'])}) — "
-        f"{_safe(p['width'])}x{_safe(p['height'])} — {_safe(p['image_url'])}"
-        f"{_ATTRIBUTION_FOOTER}"
-    )
+def format_single_photo(payload: dict[str, Any]) -> SinglePhotoResult:
+    return {"photo": photo_to_json(payload)}
 
 
-def format_single_video(payload: dict[str, Any], response_format: str) -> str:
-    if response_format == "json":
-        return json.dumps({"video": video_to_json(payload)}, ensure_ascii=False)
-    v = video_to_json(payload)
-    return (
-        f"- #{_safe(v['id'])} — {_safe(v['duration_seconds'], '?')}s "
-        f"{_safe(v['width'])}x{_safe(v['height'])} — by "
-        f"[{_safe(v['uploader_name'])}]({_safe(v['uploader_url'])}) — "
-        f"{_safe(v['video_url'])}"
-        f"{_ATTRIBUTION_FOOTER}"
-    )
+def format_single_video(payload: dict[str, Any]) -> SingleVideoResult:
+    return {"video": video_to_json(payload)}
 
 
 # --------------------------------------------------------- post-hoc filter

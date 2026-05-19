@@ -1,7 +1,7 @@
 """End-to-end ASGI tests for the streamable-HTTP transport.
 
 Drives ``mcp.streamable_http_app()`` through ``httpx.ASGITransport`` to
-verify the OAuth surface the MCP 2025-06-18 spec mandates is reachable
+verify the OAuth surface the MCP 2025-11-25 spec mandates is reachable
 from the outside — without booting uvicorn.
 
 What we check:
@@ -96,7 +96,7 @@ async def test_unauthed_mcp_post_returns_401_with_www_authenticate(
             headers={
                 "Content-Type": "application/json",
                 "Accept": "application/json, text/event-stream",
-                "MCP-Protocol-Version": "2025-06-18",
+                "MCP-Protocol-Version": "2025-11-25",
             },
         )
     assert response.status_code == 401

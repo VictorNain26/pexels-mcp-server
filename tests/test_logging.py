@@ -92,7 +92,7 @@ def test_validate_http_env_rejects_missing_url() -> None:
 
 
 def test_validate_http_env_rejects_plain_http_in_prod() -> None:
-    """MCP spec 2025-06-18 §Communication Security demands HTTPS."""
+    """MCP spec 2025-11-25 §Communication Security demands HTTPS."""
     with mock.patch.dict(
         os.environ, {"MCP_SERVER_URL": "http://pexels-mcp.example.com"}, clear=True
     ):

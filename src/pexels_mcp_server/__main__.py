@@ -124,7 +124,7 @@ def _validate_http_env() -> None:
 
     The hosted transport needs a publicly reachable URL so the RFC 9728
     Protected Resource Metadata and RFC 8414 Authorization Server Metadata
-    point at the right host. MCP spec 2025-06-18 §"Communication Security"
+    point at the right host. MCP spec 2025-11-25 §"Communication Security"
     mandates HTTPS on every authorization-server endpoint; we enforce that
     here so an operator cannot accidentally ship an http:// URL behind a
     TLS-terminating proxy that's been misconfigured. The only http://
@@ -149,7 +149,7 @@ def _validate_http_env() -> None:
         return
     sys.stderr.write(
         f"[pexels-mcp] ERROR MCP_SERVER_URL='{raw}' is not allowed. MCP spec "
-        "2025-06-18 §Communication Security requires HTTPS on every OAuth "
+        "2025-11-25 §Communication Security requires HTTPS on every OAuth "
         "endpoint. Use 'https://...' in production, or 'http://127.0.0.1:<port>' "
         "for local development only.\n"
     )

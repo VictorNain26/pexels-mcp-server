@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import json
-
 from pexels_mcp_server.formatters import (
     filter_by_dimensions,
     format_collection_media,
@@ -87,7 +85,7 @@ def test_video_to_json_keeps_only_top_file() -> None:
 # --- envelope shapes ------------------------------------------------------
 
 
-def test_format_photo_list_json_envelope_minimal() -> None:
+def test_format_photo_list_returns_minimal_envelope() -> None:
     payload = {
         "page": 2,
         "per_page": 1,
@@ -95,15 +93,14 @@ def test_format_photo_list_json_envelope_minimal() -> None:
         "next_page": "https://api.pexels.com/v1/search?page=3",
         "photos": [_FULL_PHOTO],
     }
-    raw = format_photo_list(payload, "json")
-    parsed = json.loads(raw)
-    assert parsed["total_results"] == 100
-    assert parsed["page"] == 2
-    assert parsed["has_more"] is True
-    assert parsed["next_page"] == 3
-    assert "rate_limit" not in parsed, "rate_limit dropped (kept server-side logging)"
-    assert len(parsed["photos"]) == 1
-    assert parsed["photos"][0]["image_url"] == "https://x/orig.jpg"
+    out = format_photo_list(payload)
+    assert out["total_results"] == 100
+    assert out["page"] == 2
+    assert out["has_more"] is True
+    assert out["next_page"] == 3
+    assert "rate_limit" not in out, "rate_limit dropped (kept server-side logging)"
+    assert len(out["photos"]) == 1
+    assert out["photos"][0]["image_url"] == "https://x/orig.jpg"
 
 
 def test_format_photo_list_omits_next_page_when_last() -> None:
@@ -113,33 +110,31 @@ def test_format_photo_list_omits_next_page_when_last() -> None:
         "total_results": 5,
         "photos": [_FULL_PHOTO],
     }
-    parsed = json.loads(format_photo_list(payload, "json"))
-    assert parsed["has_more"] is False
-    assert "next_page" not in parsed
+    out = format_photo_list(payload)
+    assert out["has_more"] is False
+    assert "next_page" not in out
 
 
-def test_format_video_list_json_envelope_minimal() -> None:
+def test_format_video_list_returns_minimal_envelope() -> None:
     payload = {
         "page": 1,
         "per_page": 1,
         "total_results": 5,
         "videos": [_FULL_VIDEO],
     }
-    parsed = json.loads(format_video_list(payload, "json"))
-    assert parsed["videos"][0]["duration_seconds"] == 30
-    assert parsed["videos"][0]["video_url"] == "https://x/uhd.mp4"
+    out = format_video_list(payload)
+    assert out["videos"][0]["duration_seconds"] == 30
+    assert out["videos"][0]["video_url"] == "https://x/uhd.mp4"
 
 
-def test_format_single_photo_includes_attribution_in_markdown() -> None:
-    md = format_single_photo(_FULL_PHOTO, "markdown")
-    assert "Alice" in md
-    assert "Photos provided by Pexels" in md
+def test_format_single_photo_wraps_projection_in_photo_key() -> None:
+    out = format_single_photo(_FULL_PHOTO)
+    assert out == {"photo": photo_to_json(_FULL_PHOTO)}
 
 
-def test_format_single_video_markdown_has_attribution() -> None:
-    md = format_single_video(_FULL_VIDEO, "markdown")
-    assert "Bob" in md
-    assert "Photos provided by Pexels" in md
+def test_format_single_video_wraps_projection_in_video_key() -> None:
+    out = format_single_video(_FULL_VIDEO)
+    assert out == {"video": video_to_json(_FULL_VIDEO)}
 
 
 def test_format_collection_media_splits_photos_and_videos() -> None:
@@ -153,10 +148,10 @@ def test_format_collection_media_splits_photos_and_videos() -> None:
             {**_FULL_VIDEO, "type": "Video"},
         ],
     }
-    parsed = json.loads(format_collection_media(payload, "json"))
-    assert parsed["id"] == "abc"
-    assert len(parsed["photos"]) == 1
-    assert len(parsed["videos"]) == 1
+    out = format_collection_media(payload)
+    assert out["id"] == "abc"
+    assert len(out["photos"]) == 1
+    assert len(out["videos"]) == 1
 
 
 # --- filter_diagnostics (only on actionable wipe) ------------------------
@@ -178,9 +173,9 @@ def test_envelope_surfaces_filter_diagnostics_only_when_wiped() -> None:
             "suggestion": "Filters rejected every candidate. Retry without aspect_ratio.",
         },
     }
-    parsed = json.loads(format_photo_list(payload, "json"))
-    assert "filter_diagnostics" in parsed
-    assert parsed["filter_diagnostics"]["post_filter_count"] == 0
+    out = format_photo_list(payload)
+    assert "filter_diagnostics" in out
+    assert out["filter_diagnostics"]["post_filter_count"] == 0
 
 
 def test_envelope_omits_filter_diagnostics_when_payload_has_none() -> None:
@@ -190,8 +185,8 @@ def test_envelope_omits_filter_diagnostics_when_payload_has_none() -> None:
         "total_results": 100,
         "photos": [_FULL_PHOTO],
     }
-    parsed = json.loads(format_photo_list(payload, "json"))
-    assert "filter_diagnostics" not in parsed
+    out = format_photo_list(payload)
+    assert "filter_diagnostics" not in out
 
 
 # --- filter_by_dimensions: post-hoc filter -------------------------------

@@ -252,6 +252,36 @@ async def test_revoke_token_removes_access_token_and_bound_key() -> None:
     assert provider.pexels_key_for_token(issued.access_token) is None
 
 
+async def test_token_store_caps_at_max_and_evicts_oldest() -> None:
+    """Sustained traffic must not grow ``_tokens`` unbounded.
+
+    Symmetric to ``register_client``'s cap on ``_clients``: when the token
+    store hits the configured ceiling, the provider evicts the oldest 10 %
+    of entries (FIFO) so memory stays bounded on a Nano deployment under
+    a flood of fresh OAuth flows."""
+    provider = PexelsOAuthProvider(server_url=SERVER_URL, max_tracked_tokens=10)
+    client = _make_client()
+    await provider.register_client(client)
+
+    issued_tokens: list[str] = []
+    for i in range(11):
+        redirect = await _walk_to_client_redirect(
+            provider, client, state=f"s-{i}", pexels_key=f"k-{i}"
+        )
+        code = _parse_redirect(redirect)["code"][0]
+        auth_code = await provider.load_authorization_code(client, code)
+        assert auth_code is not None
+        token = await provider.exchange_authorization_code(client, auth_code)
+        issued_tokens.append(token.access_token)
+
+    # Cap is 10; the 11th issuance triggered eviction of the oldest 10 % (1).
+    # The oldest issued token is gone; the most recent one is present.
+    assert (await provider.load_access_token(issued_tokens[0])) is None
+    assert (await provider.load_access_token(issued_tokens[-1])) is not None
+    # The bound Pexels key for the evicted token is also gone.
+    assert provider.pexels_key_for_token(issued_tokens[0]) is None
+
+
 async def test_refresh_tokens_unsupported() -> None:
     provider = _make_provider()
     client = _make_client()

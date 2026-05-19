@@ -63,11 +63,6 @@ def parse_aspect_ratio(value: str) -> float:
     return ratio
 
 
-class ResponseFormat(str, Enum):
-    MARKDOWN = "markdown"
-    JSON = "json"
-
-
 class Orientation(str, Enum):
     LANDSCAPE = "landscape"
     PORTRAIT = "portrait"
@@ -233,7 +228,6 @@ class SearchPhotosParams(Pagination):
     min_width: int | None = _min_width_field()
     min_height: int | None = _min_height_field()
     aspect_ratio: str | None = _aspect_ratio_field()
-    response_format: ResponseFormat = Field(default=ResponseFormat.JSON)
 
     @field_validator("color")
     @classmethod
@@ -260,7 +254,6 @@ class SearchPhotosParams(Pagination):
 
 class GetPhotoParams(_StrictModel):
     photo_id: int = Field(ge=1)
-    response_format: ResponseFormat = Field(default=ResponseFormat.JSON)
 
 
 class SearchVideosParams(Pagination):
@@ -271,7 +264,6 @@ class SearchVideosParams(Pagination):
     min_width: int | None = _min_width_field()
     min_height: int | None = _min_height_field()
     aspect_ratio: str | None = _aspect_ratio_field()
-    response_format: ResponseFormat = Field(default=ResponseFormat.JSON)
 
     @field_validator("locale")
     @classmethod
@@ -286,7 +278,6 @@ class SearchVideosParams(Pagination):
 
 class GetVideoParams(_StrictModel):
     video_id: int = Field(ge=1)
-    response_format: ResponseFormat = Field(default=ResponseFormat.JSON)
 
 
 class CollectionMediaParams(Pagination):
@@ -296,7 +287,6 @@ class CollectionMediaParams(Pagination):
     min_width: int | None = _min_width_field()
     min_height: int | None = _min_height_field()
     aspect_ratio: str | None = _aspect_ratio_field()
-    response_format: ResponseFormat = Field(default=ResponseFormat.JSON)
 
     @field_validator("aspect_ratio")
     @classmethod
