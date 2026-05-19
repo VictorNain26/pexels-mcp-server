@@ -66,6 +66,17 @@ def main() -> None:
     host = os.environ.get("HOST", "127.0.0.1")
     port = int(os.environ.get("PORT", "8000"))
     auth_token = os.environ.get("MCP_AUTH_TOKEN", "").strip()
+    # Refuse to boot HTTP mode without a Bearer token. An open /mcp endpoint
+    # on a public host burns the operator's Pexels quota and exposes the
+    # server to anyone on the internet. Local-loopback dev callers can opt
+    # in via MCP_ALLOW_UNAUTHED=1.
+    if not auth_token and os.environ.get("MCP_ALLOW_UNAUTHED", "").strip() != "1":
+        sys.stderr.write(
+            "[pexels-mcp] ERROR MCP_AUTH_TOKEN is required in streamable-http mode. "
+            "Generate one with `openssl rand -hex 32` and set it in the environment. "
+            "Set MCP_ALLOW_UNAUTHED=1 to override (development only).\n"
+        )
+        sys.exit(2)
 
     # Build the Starlette app and layer middleware before running uvicorn.
     # This is the only way to insert the Pexels-key extractor, the Bearer
@@ -93,10 +104,12 @@ def main() -> None:
         app = bearer_auth_middleware(app, auth_token)
         logger.info("Bearer auth enabled (MCP_AUTH_TOKEN is set).")
     else:
+        # Only reachable when MCP_ALLOW_UNAUTHED=1. Loud warning so the
+        # operator never forgets they shipped an open endpoint.
         logger.warning(
-            "MCP_AUTH_TOKEN is not set. The /mcp endpoint is open to anyone "
-            "who can reach this host. Set MCP_AUTH_TOKEN before exposing "
-            "the server publicly."
+            "MCP_ALLOW_UNAUTHED=1: Bearer auth is DISABLED. The /mcp endpoint "
+            "is open to anyone who can reach this host. Do not expose this "
+            "process to the public internet."
         )
     app = healthz_middleware(app)
 
@@ -112,7 +125,16 @@ def main() -> None:
         host,
         port,
     )
-    uvicorn.run(app, host=host, port=port, log_config=None, access_log=False)
+    # Graceful shutdown: give in-flight tool calls 8s to finish before SIGKILL.
+    # Koyeb waits ~10s after SIGTERM, so 8s leaves a 2s buffer.
+    uvicorn.run(
+        app,
+        host=host,
+        port=port,
+        log_config=None,
+        access_log=False,
+        timeout_graceful_shutdown=8,
+    )
 
 
 if __name__ == "__main__":
