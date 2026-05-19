@@ -4,6 +4,17 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ## [Unreleased]
 
+### Added (inline display in chat + filter recovery — 2026-05-19)
+- **Tool docstrings now instruct the LLM to render each photo with Markdown image syntax** `![alt](image_url)` so claude.ai (and any Markdown-rendering MCP client) shows the photos directly in the conversation — no MCP Apps iframe required, no detour through pexels.com. Solves the day-1 user complaint "I want to see the images in chat" while MCP Apps inline rendering for custom remote connectors waits for Anthropic to activate it.
+- Same pattern for videos: render the `preview_image_url` as inline Markdown image + caption (`duration · resolution · uploader`) + direct download link to `files[0].url`. User sees the preview and can save the MP4 in one click.
+- **Filter diagnostics** in every search/list response that applied a post-hoc filter (`aspect_ratio`, `min_width`, `min_height`). The new `filter_diagnostics` block carries:
+  - `applied_filters`: dict of what the server actually applied
+  - `pre_filter_count`: how many candidates Pexels returned
+  - `post_filter_count`: how many survived the filter
+  - `suggestion`: actionable retry hint when the filter wiped the page (e.g. "Retry without aspect_ratio — the photo can be cropped to target ratio in post")
+- Docstrings on `pexels_search_photos` and `pexels_search_videos` carry a **FILTER RECOVERY** section that tells the LLM exactly when and how to retry: drop `aspect_ratio` first if `post_filter_count == 0 < pre_filter_count`, widen the query if `pre_filter_count == 0`.
+- 3 new tests in `tests/test_formatters.py` covering the diagnostics block (present when filter applied, absent otherwise, surfaced in the collection-media envelope too).
+
 ### Added (MCP Apps inline rendering — 2026-05-19)
 - **MCP Apps support** per the official Jan 2026 specification (stable revision `2026-01-26`). Every search/list tool (`pexels_search_photos`, `pexels_curated_photos`, `pexels_get_photo`, `pexels_search_videos`, `pexels_popular_videos`, `pexels_get_video`, `pexels_get_collection_media`) carries `_meta.ui.resourceUri = "ui://pexels/results"`. MCP Apps-aware hosts (claude.ai web, Claude Desktop, Claude Code, Goose, VS Code GitHub Copilot, Postman, MCPJam) preload the linked UI resource and render it as a sandboxed iframe inline in the conversation when a search/list tool returns — the photos are visible to the user, not just to the model.
 - New MCP resource `ui://pexels/results` (MIME `text/html;profile=mcp-app`) serving `src/pexels_mcp_server/templates/results_grid.html`. The bundle implements the full MCP Apps wire protocol: `ui/initialize` request, `ui/notifications/initialized`, listens for `ui/notifications/tool-result`, parses the embedded JSON envelope, renders a responsive thumbnail grid, and reports back via `ui/notifications/size-changed`. Handles photos, videos, and collection media (mixed). DOM-only construction (no `innerHTML`) — XSS-safe against attacker-controlled fields in Pexels payloads.

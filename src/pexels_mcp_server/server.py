@@ -551,13 +551,21 @@ def _apply_post_hoc_filters(
     items_key: str,
     dim_filters_server_side: bool = False,
 ) -> None:
-    """Apply post-hoc filters in place: keep matching items, truncate to
-    the user's ``per_page``, and restore ``per_page`` to the user's value
-    on the envelope (the payload's ``per_page`` mirrored whatever we
-    asked Pexels for, which may have been oversampled).
+    """Apply post-hoc filters in place + attach a diagnostic block.
 
-    Pexels' ``total_results`` stays untouched — it is the count of
-    pre-filter matches, useful to the agent for pagination decisions.
+    The diagnostic block (``payload["filter_diagnostics"]``) is what lets the
+    agent recover gracefully when a tight filter combo wipes the page. It
+    carries:
+
+    - ``applied_filters``: the filters the server actually applied post-hoc.
+    - ``pre_filter_count``: how many items Pexels returned before filtering.
+    - ``post_filter_count``: how many survived.
+    - ``suggestion``: a hint string the agent reads when the filter wiped
+      everything (e.g. *"retry without aspect_ratio; crop the image to
+      target ratio in post"*).
+
+    Pexels' ``total_results`` stays untouched — it is the count of pre-filter
+    matches on the *server-side* search, useful for pagination decisions.
     """
     aspect_value = getattr(params, "aspect_ratio", None)
     target_ratio = parse_aspect_ratio(aspect_value) if aspect_value else None
@@ -565,7 +573,9 @@ def _apply_post_hoc_filters(
     min_h = None if dim_filters_server_side else getattr(params, "min_height", None)
     if target_ratio is None and min_w is None and min_h is None:
         return
+
     items = payload.get(items_key) or []
+    pre_count = len(items)
     filtered = filter_by_dimensions(
         items,
         min_width=min_w,
@@ -573,8 +583,38 @@ def _apply_post_hoc_filters(
         aspect_ratio=target_ratio,
         aspect_ratio_tolerance=getattr(params, "aspect_ratio_tolerance", 0.05),
     )
+    post_count = len(filtered)
     payload[items_key] = filtered[: int(params.per_page)]
     payload["per_page"] = int(params.per_page)
+
+    applied: dict[str, Any] = {}
+    if min_w is not None:
+        applied["min_width"] = min_w
+    if min_h is not None:
+        applied["min_height"] = min_h
+    if aspect_value is not None:
+        applied["aspect_ratio"] = aspect_value
+        applied["aspect_ratio_tolerance"] = getattr(params, "aspect_ratio_tolerance", 0.05)
+
+    diagnostics: dict[str, Any] = {
+        "applied_filters": applied,
+        "pre_filter_count": pre_count,
+        "post_filter_count": post_count,
+    }
+    if post_count == 0 and pre_count > 0:
+        # The query found candidates on Pexels but the post-hoc filters
+        # rejected all of them. The actionable retry is almost always to
+        # drop the aspect_ratio (croppable in post) before widening the
+        # query — the agent should hear that.
+        diagnostics["suggestion"] = (
+            "Filters rejected every candidate. Retry without aspect_ratio "
+            "(the photo can be cropped to target ratio in post) before "
+            "widening the query."
+            if aspect_value is not None
+            else "Filters rejected every candidate. Lower min_width / "
+            "min_height or widen the query."
+        )
+    payload["filter_diagnostics"] = diagnostics
 
 
 @mcp.tool(
@@ -621,12 +661,24 @@ async def pexels_search_photos(
       returns existing Pexels assets), images of specific named real people,
       or copyrighted material like film stills, product packaging or logos.
 
+    HOW TO PRESENT RESULTS TO THE USER (important):
+    Render every photo you recommend with Markdown image syntax so it
+    displays inline in the chat. Use this exact pattern:
+
+        ![<short alt>](<image_url>)
+        *Photo by [<photographer>](<photographer_url>) on Pexels*
+
+    The user can then see the photo directly, right-click to save it, or
+    open the source link — without leaving the conversation. Do NOT
+    fall back to plain "View image" links — `image_url` is a direct
+    `images.pexels.com` URL that Markdown renders inline. Pexels licence
+    requires the photographer credit, so always include the italic line.
+
     Returns a JSON envelope: {total_results, page, per_page, count,
-    has_more, next_page, rate_limit, photos:[{id, alt, page_url,
-    photographer, photographer_url, width, height, image_url,
-    thumbnail_url}]}. Use ``image_url`` for embedding at full resolution
-    and ``thumbnail_url`` for previews. Cite ``photographer`` and
-    ``photographer_url`` when publishing (Pexels licence).
+    has_more, next_page, rate_limit, filter_diagnostics?, photos:[{id,
+    alt, page_url, photographer, photographer_url, width, height,
+    image_url, thumbnail_url}]}. Use ``image_url`` for embedding at full
+    resolution and ``thumbnail_url`` for previews.
 
     Filters:
     - ``color`` — one of 12 named colors (red, orange, yellow, green,
@@ -635,16 +687,23 @@ async def pexels_search_photos(
     - ``orientation`` — landscape / portrait / square.
     - ``size`` — large / medium / small (Pexels' loose minimum-size bucket).
     - ``min_width`` / ``min_height`` — exact pixel floor. Use for print
-      (need ~4000 px wide for A4 at 300 DPI) or hero banners (~1920+).
+      (~4000 px wide for A4 at 300 DPI) or hero banners (~1920+).
     - ``aspect_ratio`` — exact ratio match, e.g. ``"16:9"`` for video hero,
       ``"1:1"`` for Instagram square, ``"9:16"`` for Story, ``"4:5"`` for
       LinkedIn portrait, ``"21:9"`` for ultrawide. ±5% tolerance default;
       override with ``aspect_ratio_tolerance``.
 
-    When ``aspect_ratio``, ``min_width`` or ``min_height`` is set, the
-    server oversamples (asks Pexels for up to 4x``per_page`` candidates,
-    capped at 80) and post-filters. Expect ``count`` ≤ ``per_page`` after
-    filtering; raise ``per_page`` if a tight filter wipes the page.
+    FILTER RECOVERY: when ``aspect_ratio``, ``min_width`` or ``min_height``
+    is set the server oversamples (asks Pexels for up to 4x ``per_page``
+    candidates, capped at 80) and post-filters. On niche queries that
+    combo can wipe the page. Read the ``filter_diagnostics`` block in
+    every response:
+    - if ``post_filter_count == 0`` and ``pre_filter_count > 0``, the
+      query found candidates but the filter killed them — **retry without
+      ``aspect_ratio``** first (the photo is croppable to target ratio
+      in post-production), then ``min_width`` if still empty;
+    - if ``pre_filter_count == 0`` too, the query itself is too niche —
+      widen the search terms.
 
     ``per_page`` capped at 80 by Pexels. Default 15. Paginate via ``page``.
     """
@@ -711,9 +770,12 @@ async def pexels_curated_photos(
     DO NOT USE WHEN: the user named a subject. Use ``pexels_search_photos``
       so results actually match what they asked for.
 
-    Returns the same envelope as ``pexels_search_photos``. Supports the
-    same post-hoc ``min_width`` / ``min_height`` / ``aspect_ratio``
-    filters. Curated feed updates daily.
+    Same envelope and rendering convention as ``pexels_search_photos``:
+    render each photo with Markdown image syntax ``![alt](image_url)``
+    followed by the photographer credit so it displays inline in the
+    chat. Supports the same ``min_width`` / ``min_height`` /
+    ``aspect_ratio`` post-hoc filters and the ``filter_diagnostics``
+    recovery block. Curated feed updates daily.
     """
     try:
         params = CuratedPhotosParams(
@@ -765,7 +827,10 @@ async def pexels_get_photo(
       ``pexels_search_photos`` first.
 
     Returns the same per-photo shape as the search envelope, wrapped in
-    ``{photo: {...}, rate_limit: {...}}``.
+    ``{photo: {...}, rate_limit: {...}}``. Render with Markdown image
+    syntax ``![alt](image_url)`` plus the photographer credit so the
+    user sees the photo inline (see ``pexels_search_photos`` docstring
+    for the exact rendering convention).
     """
     try:
         params = GetPhotoParams(
@@ -820,23 +885,29 @@ async def pexels_search_videos(
     DO NOT USE WHEN: the user wants AI-generated video, copyrighted clips
       or social media footage of specific named real people.
 
+    HOW TO PRESENT RESULTS TO THE USER (important):
+    Render each video's preview frame inline so the user sees a visual
+    thumbnail in the chat, then give them the direct download link:
+
+        ![<alt or description>](<preview_image_url>)
+        *<duration_seconds>s · <width>x<height> · by [<uploader_name>](<uploader_url>) on Pexels*
+        [Download MP4](<files[0].url>)
+
+    The Markdown image renders inline in claude.ai. The MP4 link lets the
+    user save the file directly without navigating to pexels.com.
+
     Returns a JSON envelope: {total_results, page, per_page, count,
-    has_more, next_page, rate_limit, videos:[{id, page_url,
-    duration_seconds, width, height, preview_image_url, uploader_name,
-    uploader_url, files:[{quality, width, height, fps, url}],
-    total_files_available}]}. Each video lists only the top 3 files by
-    resolution. Use ``files[0].url`` for the highest-quality stream.
+    has_more, next_page, rate_limit, filter_diagnostics?, videos:[{id,
+    page_url, duration_seconds, width, height, preview_image_url,
+    uploader_name, uploader_url, files:[{quality, width, height, fps,
+    url}], total_files_available}]}. Each video lists only the top 3
+    files by resolution. Use ``files[0].url`` for the highest-quality
+    stream.
 
-    Filters:
-    - ``orientation`` — landscape / portrait / square.
-    - ``size`` — large = 4K, medium = Full HD, small = HD (loose minimum).
-    - ``min_width`` / ``min_height`` — exact pixel floor (post-hoc).
-    - ``aspect_ratio`` — exact ratio, e.g. ``"16:9"`` hero, ``"9:16"`` Story,
-      ``"1:1"`` square. ±5% tolerance, override with ``aspect_ratio_tolerance``.
-
-    When ``aspect_ratio``, ``min_width`` or ``min_height`` is set, the
-    server oversamples (up to 4x ``per_page``, capped at 80) and
-    post-filters. ``count`` may be less than ``per_page`` after filtering.
+    Filters and recovery: same convention as ``pexels_search_photos``
+    (post-hoc ``min_width`` / ``min_height`` / ``aspect_ratio`` + the
+    ``filter_diagnostics`` block to retry without aspect_ratio if a
+    niche combo wiped the page).
     """
     try:
         params = SearchVideosParams(
@@ -901,10 +972,12 @@ async def pexels_popular_videos(
       "what 4K videos are trending right now".
     DO NOT USE WHEN: the user has a topic. Call ``pexels_search_videos``.
 
-    Same envelope as ``pexels_search_videos``. Combine duration bounds
-    (``min_duration``, ``max_duration`` in seconds) with ``min_width`` /
-    ``min_height`` to find clips of a target length and quality without
-    scanning hundreds of results. ``aspect_ratio`` is applied post-hoc.
+    Same envelope and rendering convention as ``pexels_search_videos``
+    (render the ``preview_image_url`` as a Markdown image + caption +
+    download link). Combine duration bounds (``min_duration``,
+    ``max_duration`` in seconds) with ``min_width`` / ``min_height`` to
+    find clips of a target length and quality without scanning hundreds
+    of results. ``aspect_ratio`` is applied post-hoc.
     """
     try:
         params = PopularVideosParams(

@@ -156,13 +156,20 @@ def _envelope(
     items: list[dict[str, Any]],
     media_projector: Any,
 ) -> dict[str, Any]:
-    """Common envelope wrapping the paginated payload + rate limit info."""
+    """Common envelope wrapping the paginated payload + rate limit info.
+
+    When the tool layer applied post-hoc filters (aspect_ratio / min_width /
+    min_height), the diagnostic block under ``payload["filter_diagnostics"]``
+    is surfaced verbatim into the envelope so the agent can read
+    ``post_filter_count`` / ``suggestion`` and decide whether to retry with
+    looser filters instead of paginating into thin air.
+    """
     page = int(payload.get("page", 1))
     per_page = int(payload.get(per_page_key, len(items)))
     total = payload.get("total_results")
     next_page_url = payload.get("next_page")
     has_more = bool(next_page_url)
-    return {
+    out: dict[str, Any] = {
         "total_results": total,
         "page": page,
         "per_page": per_page,
@@ -172,6 +179,10 @@ def _envelope(
         "rate_limit": rate_limit or {},
         items_key: [media_projector(item) for item in items],
     }
+    diagnostics = payload.get("filter_diagnostics")
+    if diagnostics:
+        out["filter_diagnostics"] = diagnostics
+    return out
 
 
 def format_photo_list(
@@ -260,7 +271,7 @@ def format_collection_media(
     total = payload.get("total_results")
     next_page_url = payload.get("next_page")
     has_more = bool(next_page_url)
-    envelope = {
+    envelope: dict[str, Any] = {
         "id": payload.get("id"),
         "total_results": total,
         "page": page,
@@ -272,6 +283,9 @@ def format_collection_media(
         "photos": [photo_to_json(p) for p in photos],
         "videos": [video_to_json(v) for v in videos],
     }
+    diagnostics = payload.get("filter_diagnostics")
+    if diagnostics:
+        envelope["filter_diagnostics"] = diagnostics
     if response_format == "json":
         return json.dumps(envelope, ensure_ascii=False, separators=(",", ":"))
     header = (

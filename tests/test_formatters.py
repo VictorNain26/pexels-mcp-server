@@ -409,3 +409,64 @@ def test_filter_by_dimensions_noop_when_no_filters() -> None:
     items = [_item(100, 100), _item(200, 200)]
     out = filter_by_dimensions(items)
     assert out == items
+
+
+# --- filter_diagnostics propagation in the envelope ----------------------
+
+
+def test_envelope_surfaces_filter_diagnostics_when_present() -> None:
+    """When the tool layer attaches a ``filter_diagnostics`` block to the
+    payload (post-hoc filter applied), the envelope must surface it so
+    the agent can read ``post_filter_count`` / ``suggestion`` and recover
+    intelligently from a 0-result filter combo."""
+    payload = {
+        "page": 1,
+        "per_page": 5,
+        "total_results": 100,
+        "photos": [_FULL_PHOTO],
+        "filter_diagnostics": {
+            "applied_filters": {"aspect_ratio": "16:9", "min_width": 1920},
+            "pre_filter_count": 12,
+            "post_filter_count": 1,
+        },
+    }
+    raw = format_photo_list(payload, {}, "json")
+    parsed = json.loads(raw)
+    assert "filter_diagnostics" in parsed
+    assert parsed["filter_diagnostics"]["pre_filter_count"] == 12
+    assert parsed["filter_diagnostics"]["post_filter_count"] == 1
+    assert parsed["filter_diagnostics"]["applied_filters"]["aspect_ratio"] == "16:9"
+
+
+def test_envelope_omits_filter_diagnostics_when_no_filter_applied() -> None:
+    """No diagnostics block = no key in the envelope. The default response
+    shape stays clean for the common no-filter case."""
+    payload = {
+        "page": 1,
+        "per_page": 5,
+        "total_results": 100,
+        "photos": [_FULL_PHOTO],
+    }
+    raw = format_photo_list(payload, {}, "json")
+    parsed = json.loads(raw)
+    assert "filter_diagnostics" not in parsed
+
+
+def test_collection_media_envelope_surfaces_filter_diagnostics() -> None:
+    payload = {
+        "id": "abc",
+        "page": 1,
+        "per_page": 5,
+        "total_results": 50,
+        "media": [{**_FULL_PHOTO, "type": "Photo"}],
+        "filter_diagnostics": {
+            "applied_filters": {"aspect_ratio": "1:1"},
+            "pre_filter_count": 8,
+            "post_filter_count": 0,
+            "suggestion": "Filters rejected every candidate. Retry without aspect_ratio.",
+        },
+    }
+    raw = format_collection_media(payload, {}, "json")
+    parsed = json.loads(raw)
+    assert parsed["filter_diagnostics"]["post_filter_count"] == 0
+    assert "Retry without aspect_ratio" in parsed["filter_diagnostics"]["suggestion"]
