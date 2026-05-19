@@ -1,11 +1,14 @@
-"""ASGI middleware tests covering the three layers wrapping FastMCP:
+"""ASGI middleware tests for the Streamable HTTP transport.
 
-- ``healthz_middleware`` short-circuits liveness/readiness probes.
-- ``bearer_auth_middleware`` enforces the shared-secret Bearer token.
-- ``pexels_key_middleware`` extracts ``X-Pexels-Api-Key`` into a ContextVar.
+Covers:
 
-The middleware is the security perimeter for the hosted HTTP deployment; a
-regression here would silently break Bearer auth or leak the Pexels key.
+- ``healthz_middleware`` short-circuits ``/healthz`` and ``/readyz`` so
+  platform probes never trigger the OAuth challenge on ``/mcp``.
+- ``pexels_key_middleware`` extracts the per-request ``X-Pexels-Api-Key``
+  header into a ``ContextVar`` so tool handlers pick up the caller's key.
+
+OAuth (Bearer validation, RFC 9728 metadata, ``WWW-Authenticate``) is owned
+by the SDK and exercised in ``test_auth.py``.
 """
 
 from __future__ import annotations
@@ -15,7 +18,6 @@ from typing import Any
 import pytest
 
 from pexels_mcp_server.transport import (
-    bearer_auth_middleware,
     healthz_middleware,
     pexels_key_ctx,
     pexels_key_middleware,
@@ -65,54 +67,6 @@ async def test_healthz_passes_through_other_paths() -> None:
     assert recorder.messages[1]["body"] == b"downstream"
 
 
-async def test_bearer_rejects_missing_token() -> None:
-    app = bearer_auth_middleware(_passthrough, "secret")
-    recorder = _Recorder()
-    await app(_http_scope("/mcp"), _noop_receive, recorder)
-    assert recorder.messages[0]["status"] == 401
-
-
-async def test_bearer_rejects_wrong_token() -> None:
-    app = bearer_auth_middleware(_passthrough, "secret")
-    recorder = _Recorder()
-    headers = [(b"authorization", b"Bearer wrong")]
-    await app(_http_scope("/mcp", headers), _noop_receive, recorder)
-    assert recorder.messages[0]["status"] == 401
-
-
-async def test_bearer_rejects_non_bearer_scheme() -> None:
-    app = bearer_auth_middleware(_passthrough, "secret")
-    recorder = _Recorder()
-    headers = [(b"authorization", b"Basic dXNlcjpwYXNz")]
-    await app(_http_scope("/mcp", headers), _noop_receive, recorder)
-    assert recorder.messages[0]["status"] == 401
-
-
-async def test_bearer_accepts_correct_token() -> None:
-    app = bearer_auth_middleware(_passthrough, "secret")
-    recorder = _Recorder()
-    headers = [(b"authorization", b"Bearer secret")]
-    await app(_http_scope("/mcp", headers), _noop_receive, recorder)
-    assert recorder.messages[0]["status"] == 200
-    assert recorder.messages[1]["body"] == b"downstream"
-
-
-@pytest.mark.parametrize("path", ["/healthz", "/readyz"])
-async def test_bearer_exempts_probe_paths(path: str) -> None:
-    app = bearer_auth_middleware(_passthrough, "secret")
-    recorder = _Recorder()
-    await app(_http_scope(path), _noop_receive, recorder)
-    assert recorder.messages[0]["status"] == 200
-
-
-async def test_bearer_passes_through_non_http_scope() -> None:
-    app = bearer_auth_middleware(_passthrough, "secret")
-    recorder = _Recorder()
-    await app({"type": "lifespan"}, _noop_receive, recorder)
-    # Downstream lifespan response is a 200 from _passthrough.
-    assert recorder.messages[0]["status"] == 200
-
-
 async def test_pexels_key_middleware_sets_contextvar() -> None:
     captured: dict[str, str | None] = {}
 
@@ -146,3 +100,10 @@ async def test_pexels_key_middleware_handles_missing_header() -> None:
     recorder = _Recorder()
     await app(_http_scope("/mcp"), _noop_receive, recorder)
     assert captured["value"] is None
+
+
+async def test_pexels_key_middleware_skips_non_http_scope() -> None:
+    app = pexels_key_middleware(_passthrough)
+    recorder = _Recorder()
+    await app({"type": "lifespan"}, _noop_receive, recorder)
+    assert recorder.messages[0]["status"] == 200

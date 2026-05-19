@@ -1,8 +1,10 @@
 """CLI entry point for ``pexels-mcp-server``.
 
-Reads transport and port from environment variables, configures stderr-only
-logging (stdio transport requires stdout to be JSON-RPC clean), then hands
-control to FastMCP.
+Reads ``TRANSPORT`` from the environment, configures stderr-only logging
+(stdio transport requires stdout to be JSON-RPC clean), then hands control
+to FastMCP. The hosted HTTP transport additionally wires OAuth 2.1 (RS+AS
+in a single process via the MCP SDK), the ``/login`` form for the human
+passcode step, and the ``X-Pexels-Api-Key`` extractor middleware.
 """
 
 from __future__ import annotations
@@ -38,8 +40,8 @@ class _JsonFormatter(logging.Formatter):
 
 def _resolve_log_format(transport: Transport) -> str:
     """Pick the log format. Explicit LOG_FORMAT env wins; otherwise default
-    to JSON in HTTP mode (Koyeb log filtering) and text in stdio mode
-    (so the Claude Desktop / Cursor stderr stays readable to humans).
+    to JSON in HTTP mode (Koyeb log filtering) and text in stdio mode (so
+    the Claude Desktop / Cursor stderr stays readable to humans).
     """
     explicit = os.environ.get("LOG_FORMAT", "").strip().lower()
     if explicit in ("json", "text"):
@@ -73,14 +75,33 @@ def _resolve_transport() -> Transport:
     sys.exit(2)
 
 
-def main() -> None:
-    """Boot the FastMCP server with the configured transport.
+def _validate_http_env() -> None:
+    """Refuse to boot HTTP mode without the OAuth configuration.
 
-    The Pexels API key is no longer required at startup. Stdio callers can
-    set ``PEXELS_API_KEY`` in their env so every tool call picks it up; HTTP
-    callers send ``X-Pexels-Api-Key`` per request. If neither is provided the
-    server still starts and tools surface an actionable error on call.
+    The hosted transport requires both a publicly reachable URL (so the
+    OAuth metadata documents point at the right host) and a passcode (so
+    the ``/login`` form has something to validate against). Either being
+    unset is a configuration error, not a runtime fallback.
     """
+    missing = [
+        name
+        for name in ("MCP_SERVER_URL", "MCP_AUTH_PASSCODE")
+        if not os.environ.get(name, "").strip()
+    ]
+    if missing:
+        sys.stderr.write(
+            "[pexels-mcp] ERROR Missing required env vars in streamable-http mode: "
+            f"{', '.join(missing)}. "
+            "MCP_SERVER_URL must be the public HTTPS URL of this service "
+            "(e.g. https://pexels-mcp.example.com); MCP_AUTH_PASSCODE is the "
+            "shared secret users type on the /login page. Generate with "
+            "`openssl rand -hex 16`.\n"
+        )
+        sys.exit(2)
+
+
+def main() -> None:
+    """Boot the FastMCP server with the configured transport."""
     transport = _resolve_transport()
     _configure_logging(_resolve_log_format(transport))
     logger = logging.getLogger("pexels_mcp_server")
@@ -90,64 +111,59 @@ def main() -> None:
             "PEXELS_API_KEY is not set. Stdio clients must provide a key via "
             "env var; tools will return an auth error until it is set."
         )
+    if transport == "streamable-http":
+        _validate_http_env()
 
     # Importing here keeps ``python -m pexels_mcp_server --help`` light and
     # defers the FastMCP/httpx import cost until we actually need it.
-    from .server import mcp
+    from .server import mcp, oauth_provider
 
     if transport == "stdio":
         logger.info("Starting pexels-mcp-server on stdio transport")
         mcp.run(transport="stdio")
         return
 
+    # HTTP mode from here on.
     host = os.environ.get("HOST", "127.0.0.1")
     port = int(os.environ.get("PORT", "8000"))
-    auth_token = os.environ.get("MCP_AUTH_TOKEN", "").strip()
-    # Refuse to boot HTTP mode without a Bearer token. An open /mcp endpoint
-    # on a public host burns the operator's Pexels quota and exposes the
-    # server to anyone on the internet. Local-loopback dev callers can opt
-    # in via MCP_ALLOW_UNAUTHED=1.
-    if not auth_token and os.environ.get("MCP_ALLOW_UNAUTHED", "").strip() != "1":
-        sys.stderr.write(
-            "[pexels-mcp] ERROR MCP_AUTH_TOKEN is required in streamable-http mode. "
-            "Generate one with `openssl rand -hex 32` and set it in the environment. "
-            "Set MCP_ALLOW_UNAUTHED=1 to override (development only).\n"
-        )
+
+    if oauth_provider is None:
+        # Defensive — _validate_http_env should have aborted already.
+        sys.stderr.write("[pexels-mcp] ERROR OAuth provider not initialised.\n")
         sys.exit(2)
 
-    # Build the Starlette app and layer middleware before running uvicorn.
-    # This is the only way to insert the Pexels-key extractor, the Bearer
-    # gate and a /healthz endpoint without forking FastMCP.
     from typing import cast
 
     import uvicorn
+    from starlette.routing import Route
 
     from .transport import (
         ASGIApp,
-        bearer_auth_middleware,
         healthz_middleware,
         pexels_key_middleware,
     )
 
-    # Starlette implements the ASGI3 protocol but its type is not
-    # interchangeable with the bare callable signature mypy infers for
-    # ASGIApp. Cast once at the boundary; downstream middleware stays typed.
-    app: ASGIApp = cast(ASGIApp, mcp.streamable_http_app())
-    # Order from outermost to innermost wrap: healthz -> bearer -> pexels_key
-    # -> FastMCP. Reverse order in code because each wrap returns the new
-    # outer app.
-    app = pexels_key_middleware(app)
-    if auth_token:
-        app = bearer_auth_middleware(app, auth_token)
-        logger.info("Bearer auth enabled (MCP_AUTH_TOKEN is set).")
-    else:
-        # Only reachable when MCP_ALLOW_UNAUTHED=1. Loud warning so the
-        # operator never forgets they shipped an open endpoint.
-        logger.warning(
-            "MCP_ALLOW_UNAUTHED=1: Bearer auth is DISABLED. The /mcp endpoint "
-            "is open to anyone who can reach this host. Do not expose this "
-            "process to the public internet."
+    # FastMCP returns a Starlette app already wired with the OAuth routes
+    # (/authorize, /token, /register, /.well-known/oauth-authorization-server),
+    # the RFC 9728 Protected Resource Metadata (/.well-known/oauth-protected-resource)
+    # and Bearer validation in front of /mcp. We append our own /login and
+    # /login/callback routes for the human passcode step.
+    starlette_app = mcp.streamable_http_app()
+    starlette_app.routes.append(
+        Route("/login", endpoint=oauth_provider.render_login_page, methods=["GET"])
+    )
+    starlette_app.routes.append(
+        Route(
+            "/login/callback",
+            endpoint=oauth_provider.handle_login_callback,
+            methods=["POST"],
         )
+    )
+
+    # Wrap with the X-Pexels-Api-Key extractor and the platform healthz
+    # short-circuit. The outermost wrap runs first per ASGI semantics.
+    app: ASGIApp = cast(ASGIApp, starlette_app)
+    app = pexels_key_middleware(app)
     app = healthz_middleware(app)
 
     if env_key_present:

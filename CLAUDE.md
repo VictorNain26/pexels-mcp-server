@@ -4,7 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-Pexels MCP server: an async Python Model Context Protocol server exposing nine read-only Pexels REST tools (search/get/preview photos, videos, collections) to MCP-aware AI agents. Two transports: `stdio` (local clients like Claude Desktop) and `streamable-http` (hosted multi-tenant deployment on Koyeb/Fly/Cloud Run).
+Pexels MCP server: an async Python Model Context Protocol server exposing nine read-only Pexels REST tools (search/get/preview photos, videos, collections) to MCP-aware AI agents.
+
+**One canonical deployment topology**: hosted Streamable HTTP with OAuth 2.1 + RFC 9728. The same `/mcp` endpoint works with claude.ai web custom connectors, Claude Desktop remote connectors, Claude Code HTTP transport, MCP Inspector, and any future MCP HTTP client. Stdio is still wired in FastMCP (zero marginal cost) for clients that can only speak stdio (Cursor), but it is **not** the supported topology — every doc, deploy guide, and security model targets the hosted HTTP mode.
 
 ## Commands
 
@@ -14,70 +16,109 @@ All workflows go through `uv` (Python 3.10+ required):
 uv sync --all-extras                  # install deps + dev extras
 uv run ruff check                     # lint (line-length=100, target=py310)
 uv run ruff format --check            # formatting
-uv run mypy src                       # strict type-check (mypy strict mode)
+uv run mypy src                       # strict type-check
 uv run pytest                         # full test suite
-uv run pytest tests/test_client.py    # single file
+uv run pytest tests/test_auth.py      # single file
 uv run pytest tests/test_schemas.py::test_search_photos_valid  # single test
-uv run pytest -q -k "preview"         # by keyword
+uv run pytest -q -k "oauth"           # by keyword
 ```
 
-Run the server locally:
+Run the server locally in HTTP mode (parity with prod):
 
 ```bash
-PEXELS_API_KEY=your-key uv run pexels-mcp-server                # stdio (default)
-MCP_AUTH_TOKEN=test123 TRANSPORT=streamable-http HOST=0.0.0.0 \
-  uv run pexels-mcp-server                                       # HTTP mode
+TRANSPORT=streamable-http \
+HOST=127.0.0.1 PORT=8000 \
+MCP_SERVER_URL=http://127.0.0.1:8000 \
+MCP_AUTH_PASSCODE=devpass \
+  uv run pexels-mcp-server
 ```
 
-Inspect schemas interactively: `npx @modelcontextprotocol/inspector uv run pexels-mcp-server`.
+Stdio mode (Cursor / power users):
 
-CI matrix: Python 3.10/3.11/3.12 + Docker build & boot smoke test on every PR.
+```bash
+PEXELS_API_KEY=your-key uv run pexels-mcp-server
+```
+
+CI matrix: Python 3.10 / 3.11 / 3.12 + Docker build & boot smoke test on every PR.
 
 ## Architecture
 
-Five-layer request flow plus two helpers:
+Six layers, each with one job. Helpers are mounted as Starlette/ASGI middleware around the FastMCP-built app.
 
 ```text
-__main__.py     transport selection, stderr logging, HTTP middleware wiring
+__main__.py     transport selection, stderr logging, OAuth env validation, HTTP middleware wiring
    ↓
-server.py       FastMCP server + 9 @mcp.tool functions (input shaping, key resolution, error formatting)
+server.py       FastMCP server + 9 @mcp.tool functions; OAuth wiring (auth_server_provider, token_verifier, AuthSettings)
+   ↓
+auth.py         PexelsOAuthProvider (in-memory AS), /login page, passcode validation
    ↓
 schemas.py      Pydantic v2 input models (extra="forbid", host allowlist, locale allowlist)
    ↓
-client.py       Async httpx wrapper, one retry on 5xx with jittered backoff, never stores a key
+client.py       Async httpx wrapper for Pexels REST; one retry on 5xx with jittered backoff
    ↓
 formatters.py   Token-lean JSON projections + Markdown summaries + rate_limit envelope
 
-Helpers (off the main path):
+ASGI helpers (off the main path):
 previews.py     Concurrent thumbnail fetcher for the visual-pick tool (semaphore-capped)
-transport.py    ASGI middleware: /healthz, Bearer auth, X-Pexels-Api-Key extractor
+transport.py    healthz_middleware (/healthz, /readyz) and pexels_key_middleware (X-Pexels-Api-Key)
 ```
 
-### Per-request API key resolution (critical)
+### OAuth wiring (HTTP mode)
 
-The Pexels API key is **never stored in server config**. `server._resolve_api_key()` resolves it per tool call in this order:
+The `FastMCP` constructor gets three things in HTTP mode and **nothing OAuth-related** in stdio:
 
-1. `X-Pexels-Api-Key` header on the live Starlette request (read via `ctx.request_context.request.headers`) — canonical in HTTP mode. **Must be the first source**: FastMCP spawns the session worker at `initialize` time, so a ContextVar set later by ASGI middleware would be invisible to the worker.
-2. `pexels_key_ctx` ContextVar populated by `pexels_key_middleware` (covers `stateless_http=True` request-task isolation).
-3. `PEXELS_API_KEY` env var (stdio fallback).
+- `auth_server_provider=PexelsOAuthProvider(...)` — implements the SDK's `OAuthAuthorizationServerProvider` protocol (in-memory clients/codes/tokens).
+- `token_verifier=ProviderTokenVerifier(provider)` — SDK helper that delegates to `provider.load_access_token`.
+- `auth=AuthSettings(issuer_url=MCP_SERVER_URL, resource_server_url=MCP_SERVER_URL, required_scopes=["mcp"], client_registration_options=ClientRegistrationOptions(enabled=True, ...))`.
 
-When adding new tools, always go through `_resolve_api_key(ctx)`; do not read env vars directly inside a tool function.
+`FastMCP.streamable_http_app()` then mounts automatically:
+
+- `/.well-known/oauth-protected-resource` (RFC 9728) — RS metadata.
+- `/.well-known/oauth-authorization-server` (RFC 8414) — AS metadata.
+- `/authorize`, `/token`, `/register` (RFC 7591 DCR) — AS endpoints.
+- `RequireAuthMiddleware` in front of `/mcp` — emits the spec-compliant `WWW-Authenticate: Bearer ... resource_metadata=...` on 401.
+
+`__main__.py` appends two custom routes for the human passcode step:
+
+- `GET /login` → minimal HTML form (rendered by `PexelsOAuthProvider.render_login_page`).
+- `POST /login/callback` → validates the passcode and issues the authorization code.
+
+The OAuth flow in one diagram (claude.ai's perspective):
+
+```text
+GET  /mcp               -> 401 + WWW-Authenticate (resource_metadata URL)
+GET  /.well-known/...   -> AS + RS metadata
+POST /register          -> client_id
+GET  /authorize?state.. -> 302 -> /login?state=...
+GET  /login?state=...   -> HTML form
+POST /login/callback    -> 302 -> client redirect_uri?code=...&state=...
+POST /token             -> { access_token: "mcp_..." }
+POST /mcp + Bearer      -> JSON-RPC OK
+```
+
+### Per-request Pexels key resolution
+
+Orthogonal to OAuth. `server._resolve_api_key()` resolves the Pexels API key per tool call in this order:
+
+1. `X-Pexels-Api-Key` header on the live Starlette request (HTTP mode).
+2. `pexels_key_ctx` ContextVar populated by `pexels_key_middleware`.
+3. `PEXELS_API_KEY` env var (stdio fallback; not recommended in HTTP mode).
 
 ### Stateless HTTP posture
 
-FastMCP is configured with `stateless_http=True, json_response=True`. This means no `Mcp-Session-Id` is allocated, the response is one JSON object (not SSE), and the server scales horizontally without sticky sessions. Do not introduce per-session state in `server.py`.
+`FastMCP(stateless_http=True, json_response=True)`. No `Mcp-Session-Id` is allocated; the response is one JSON object per request. The MCP 2025-06-18 spec keeps session IDs OPTIONAL — opting out is the right posture for horizontally scaled deployments.
 
 ### Middleware order (HTTP mode only)
 
 Built outside-in in `__main__.main()`:
 
 ```text
-healthz → bearer_auth → pexels_key → FastMCP streamable_http_app
+healthz -> pexels_key -> FastMCP (which itself wraps /mcp with RequireAuthMiddleware)
 ```
 
-`/healthz` and `/readyz` short-circuit before auth (platform probes don't trigger 401 noise). `bearer_auth_middleware` uses `hmac.compare_digest` and rejects non-matching tokens with 401. Refusal to boot without `MCP_AUTH_TOKEN` is enforced in `__main__` (exit code 2) unless `MCP_ALLOW_UNAUTHED=1`.
+Healthz and readyz short-circuit before any auth (platform probes don't trigger 401 noise). `pexels_key_middleware` extracts `X-Pexels-Api-Key` into a ContextVar before the tool handler runs. The Bearer token validation and OAuth route mounting are owned by the SDK — do **not** add a hand-rolled bearer middleware here.
 
-DNS rebinding protection is **off by default** (`MCP_ALLOWED_HOSTS` unset → `enable_dns_rebinding_protection=False`); Bearer auth is the gate. Set `MCP_ALLOWED_HOSTS` to a comma-separated allowlist to re-enable.
+DNS rebinding protection is **off by default** (`MCP_ALLOWED_HOSTS` unset → `enable_dns_rebinding_protection=False`); OAuth Bearer validation is the gate. On Koyeb, set `MCP_ALLOWED_HOSTS={{ KOYEB_PUBLIC_DOMAIN }}` to re-enable it on the known public host.
 
 ### Preview tool security model
 
@@ -125,15 +166,25 @@ All tool inputs go through a Pydantic model in `schemas.py` with `ConfigDict(ext
 
 ### What this project rejects
 
-- Tools that need OAuth (Pexels `My Collections`).
+- Tools that need write access to Pexels' API.
 - Re-exports of full Pexels payloads — every field must justify itself.
+- Hand-rolled OAuth or hand-rolled bearer middleware. The SDK owns the auth surface; we only customize `/login` for the passcode step.
 - New runtime deps beyond `mcp`, `httpx`, `pydantic`, `uvicorn`.
 - `# type: ignore` without a comment.
 - Tests that hit the real Pexels API in CI (use `pytest-httpx`).
 
 ## Test layout
 
-`tests/` mirrors `src/pexels_mcp_server/`: `test_client.py` (HTTP layer with pytest-httpx mocks), `test_schemas.py` (validation), `test_formatters.py` (projection shape), `test_previews.py` (CDN whitelist + ImageContent), `test_transport.py` (ASGI middleware), `test_server_config.py` (FastMCP wiring), `test_logging.py` (JSON formatter).
+`tests/` mirrors `src/pexels_mcp_server/`:
+
+- `test_client.py` (HTTP layer with pytest-httpx mocks)
+- `test_schemas.py` (validation)
+- `test_formatters.py` (projection shape)
+- `test_previews.py` (CDN whitelist + ImageContent)
+- `test_transport.py` (healthz + pexels_key ASGI middleware)
+- `test_auth.py` (PexelsOAuthProvider unit tests — register, authorize, /login flow, code/token exchange, expiry, revoke)
+- `test_server_config.py` (FastMCP wiring smoke tests)
+- `test_logging.py` (JSON formatter)
 
 `pytest.ini_options.filterwarnings = ["error", ...]` — any new DeprecationWarning fails the suite. Pin or migrate.
 
@@ -143,3 +194,4 @@ All tool inputs go through a Pydantic model in `schemas.py` with `ConfigDict(ext
 - Pexels' single-video endpoint is at `/v1/videos/videos/:id` — the repeated `videos` segment is intentional per their docs; preserved in `client.get_video`.
 - The Dockerfile pins the `uv` image to a content-addressable digest (Dependabot bumps the `0.7` tag + digest together). Don't drop the digest.
 - Conventional commits (`feat`, `fix`, `chore`, `refactor`, `test`, `docs`, `style`, `perf`, `ci`, `build`). English for commits, PR descriptions, branch names.
+- OAuth token storage is **in-memory**. A Koyeb restart invalidates every token; claude.ai re-auths transparently. Persistence (Redis / Postgres) is out of scope.

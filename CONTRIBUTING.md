@@ -28,18 +28,24 @@ CI runs the same on Python 3.10, 3.11, 3.12.
 ```
 src/pexels_mcp_server/
   __init__.py          version
-  __main__.py          CLI entry point, transport selection, stderr logging
-  server.py            FastMCP server, tool registration
+  __main__.py          CLI entry point, transport selection, OAuth env validation, HTTP middleware wiring
+  server.py            FastMCP server, tool registration, OAuth wiring (HTTP mode)
+  auth.py              In-process OAuth Authorization Server (PexelsOAuthProvider) + /login HTML
   client.py            Async httpx client wrapping the Pexels REST API
   schemas.py           Pydantic v2 input models (extra="forbid")
   formatters.py        Token-lean JSON projections + Markdown bullets
   previews.py          Thumbnail fetcher for the visual-pick tool
+  transport.py         ASGI middleware (healthz, X-Pexels-Api-Key extractor)
   constants.py         BASE_URL, allowed hosts, pagination limits
 tests/
   test_client.py       HTTP layer (pytest-httpx)
   test_schemas.py      Pydantic validation
   test_formatters.py   Lean output shape
   test_previews.py     CDN whitelist + ImageContent wrapping
+  test_transport.py    ASGI middleware (healthz, pexels_key)
+  test_auth.py         OAuth provider unit tests (register, authorize, login, exchange, expiry, revoke)
+  test_server_config.py  FastMCP wiring smoke tests
+  test_logging.py      JSON formatter
 ```
 
 ## Adding a tool
