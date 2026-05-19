@@ -176,12 +176,17 @@ async def test_client_drops_none_query_params(httpx_mock: HTTPXMock) -> None:
 
 
 # --- validate_key (BYOK setup probe) ------------------------------------
+#
+# ``validate_key`` hits ``/v1/collections`` (the caller's own collections)
+# and *not* ``/v1/curated`` or ``/v1/search`` — the latter two are served
+# from the Pexels CDN and respond 200 with cached content even for an
+# invalid key, which makes them useless for authentication checks.
 
 
 async def test_validate_key_returns_true_on_200(httpx_mock: HTTPXMock) -> None:
     httpx_mock.add_response(
-        url=f"{BASE_URL}/v1/curated?per_page=1",
-        json={"page": 1, "per_page": 1, "total_results": 0, "photos": []},
+        url=f"{BASE_URL}/v1/collections?per_page=1",
+        json={"page": 1, "per_page": 1, "total_results": 0, "collections": []},
         headers=_rate_headers(),
         match_headers={"Authorization": "good-key"},
     )
@@ -191,9 +196,9 @@ async def test_validate_key_returns_true_on_200(httpx_mock: HTTPXMock) -> None:
 
 async def test_validate_key_returns_false_on_401(httpx_mock: HTTPXMock) -> None:
     httpx_mock.add_response(
-        url=f"{BASE_URL}/v1/curated?per_page=1",
+        url=f"{BASE_URL}/v1/collections?per_page=1",
         status_code=401,
-        json={"error": "unauthorized"},
+        json={"status": 401, "code": "Unauthorized", "message": "Invalid API key"},
     )
     async with PexelsClient() as client:
         assert await client.validate_key("bad-key") is False
@@ -201,7 +206,7 @@ async def test_validate_key_returns_false_on_401(httpx_mock: HTTPXMock) -> None:
 
 async def test_validate_key_returns_false_on_403(httpx_mock: HTTPXMock) -> None:
     httpx_mock.add_response(
-        url=f"{BASE_URL}/v1/curated?per_page=1",
+        url=f"{BASE_URL}/v1/collections?per_page=1",
         status_code=403,
         json={"error": "forbidden"},
     )
@@ -213,7 +218,7 @@ async def test_validate_key_raises_on_persistent_5xx(httpx_mock: HTTPXMock) -> N
     """A 5xx from Pexels is a service problem, not a key problem — surface it
     so the /setup handler can show 'try again in a moment' instead of
     blaming the user's key."""
-    url = f"{BASE_URL}/v1/curated?per_page=1"
+    url = f"{BASE_URL}/v1/collections?per_page=1"
     httpx_mock.add_response(url=url, status_code=500, json={"error": "boom"})
     httpx_mock.add_response(url=url, status_code=500, json={"error": "boom"})
     async with PexelsClient() as client:

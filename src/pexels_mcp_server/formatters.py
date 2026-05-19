@@ -490,3 +490,47 @@ def collection_item_preview_url(item: dict[str, Any]) -> str | None:
     if item.get("type") == "Video":
         return video_preview_url(item)
     return photo_preview_url(item)
+
+
+# --------------------------------------------------------- post-hoc filters
+#
+# Pexels' REST API exposes very coarse filters: ``size`` is a 3-bucket
+# enum (large/medium/small) and there is no aspect-ratio filter. Marketing
+# work needs both (Instagram 1:1, Story 9:16, hero 16:9, LinkedIn 4:5,
+# print 4000+ px). We apply these as post-hoc filters on the items the
+# REST call returned, since every Pexels item already carries native
+# ``width`` and ``height``.
+
+
+def filter_by_dimensions(
+    items: list[dict[str, Any]],
+    *,
+    min_width: int | None = None,
+    min_height: int | None = None,
+    aspect_ratio: float | None = None,
+    aspect_ratio_tolerance: float = 0.05,
+) -> list[dict[str, Any]]:
+    """Keep items matching the dimension / aspect-ratio constraints.
+
+    Items lacking valid integer ``width``/``height`` are dropped silently
+    — the alternative (keeping them) would let unbounded data through a
+    filter the caller specifically asked for.
+    """
+    out: list[dict[str, Any]] = []
+    for item in items:
+        width = item.get("width")
+        height = item.get("height")
+        if not isinstance(width, int) or not isinstance(height, int):
+            continue
+        if width <= 0 or height <= 0:
+            continue
+        if min_width is not None and width < min_width:
+            continue
+        if min_height is not None and height < min_height:
+            continue
+        if aspect_ratio is not None:
+            actual = width / height
+            if abs(actual - aspect_ratio) > aspect_ratio * aspect_ratio_tolerance:
+                continue
+        out.append(item)
+    return out

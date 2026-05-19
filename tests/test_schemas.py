@@ -175,3 +175,83 @@ def test_required_field_null_still_fails() -> None:
     ``query=null`` on SearchPhotosParams is a real error."""
     with pytest.raises(ValidationError):
         SearchPhotosParams(query=None)  # type: ignore[arg-type]
+
+
+# --- marketing filters: aspect_ratio + min_width + min_height ------------
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("16:9", 16 / 9),
+        ("1:1", 1.0),
+        ("9:16", 9 / 16),
+        ("4:5", 0.8),
+        ("21:9", 21 / 9),
+        ("1.5", 1.5),
+        ("0.5625", 0.5625),
+        (" 16 : 9 ", 16 / 9),  # whitespace tolerated
+    ],
+)
+def test_parse_aspect_ratio_accepts_valid_inputs(value: str, expected: float) -> None:
+    from pexels_mcp_server.schemas import parse_aspect_ratio
+
+    assert parse_aspect_ratio(value) == pytest.approx(expected)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "",
+        "16",
+        "16:0",
+        "0:9",
+        "-16:9",
+        "16x9",
+        "sixteen:nine",
+        "16:9:9",
+        ":",
+    ],
+)
+def test_parse_aspect_ratio_rejects_invalid_inputs(value: str) -> None:
+    from pexels_mcp_server.schemas import parse_aspect_ratio
+
+    with pytest.raises(ValueError, match="aspect_ratio"):
+        parse_aspect_ratio(value)
+
+
+def test_search_photos_accepts_aspect_ratio_and_min_dims() -> None:
+    params = SearchPhotosParams(
+        query="cat",
+        aspect_ratio="16:9",
+        min_width=1920,
+        min_height=1080,
+    )
+    assert params.aspect_ratio == "16:9"
+    assert params.min_width == 1920
+    assert params.min_height == 1080
+
+
+def test_search_photos_rejects_invalid_aspect_ratio() -> None:
+    with pytest.raises(ValidationError):
+        SearchPhotosParams(query="cat", aspect_ratio="not-a-ratio")
+
+
+def test_search_photos_rejects_negative_min_width() -> None:
+    with pytest.raises(ValidationError):
+        SearchPhotosParams(query="cat", min_width=0)
+
+
+def test_search_photos_rejects_oversized_min_width() -> None:
+    """The 100 000 px cap stops a typo from yielding an unreachable filter."""
+    with pytest.raises(ValidationError):
+        SearchPhotosParams(query="cat", min_width=200_000)
+
+
+def test_aspect_ratio_tolerance_bounds() -> None:
+    params = SearchPhotosParams(query="cat", aspect_ratio="1:1", aspect_ratio_tolerance=0.1)
+    assert params.aspect_ratio_tolerance == 0.1
+    with pytest.raises(ValidationError):
+        SearchPhotosParams(query="cat", aspect_ratio_tolerance=-0.1)
+    with pytest.raises(ValidationError):
+        SearchPhotosParams(query="cat", aspect_ratio_tolerance=0.6)

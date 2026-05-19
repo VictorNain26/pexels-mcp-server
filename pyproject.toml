@@ -125,6 +125,11 @@ filterwarnings = [
     "error",
     "ignore::DeprecationWarning:pydantic.*",
 ]
+markers = [
+    "live: hits the real api.pexels.com / images.pexels.com (requires PEXELS_API_KEY env var). Excluded from CI; opt in with `pytest -m live`.",
+]
+# Default: skip live tests. Override with `-m live` or `-m 'live or not live'`.
+addopts = "-m 'not live'"
 
 [tool.coverage.run]
 source = ["src/pexels_mcp_server"]
