@@ -4,6 +4,51 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ## [Unreleased]
 
+### Added (Redis-backed OAuth state — 2026-05-19)
+
+OAuth state (DCR clients, access tokens, bound Pexels keys) can now live
+in Redis instead of process memory. Opt in by setting two env vars on
+the Koyeb service:
+
+- `REDIS_URL` — any Redis endpoint (`redis://` or `rediss://`). Tested
+  with [Upstash Redis](https://upstash.com/) free tier (10k cmd/day,
+  256 MB, TLS) which is the sweet spot for this server's volume (~1 SET
+  per OAuth flow + ~1 GET per tool call).
+- `MCP_ENCRYPTION_KEY` — 32-byte url-safe base64 Fernet key. The bound
+  Pexels API key is encrypted client-side (AES-128-CBC + HMAC-SHA256)
+  before being written to Redis, so a leaked Redis snapshot alone yields
+  opaque ciphertext.
+
+With this enabled, users keep their session through a Koyeb rolling
+deploy — no more "re-paste your Pexels key on every restart". This
+matches the persistence pattern of every production MCP connector.
+
+Architecture: a `TokenStore` Protocol (`src/pexels_mcp_server/storage.py`)
+with two implementations (`InMemoryTokenStore` for the historical default
+and stdio mode, `RedisTokenStore` for the persistent path). The OAuth
+provider takes a `TokenStore` parameter; `server.py::_build_oauth_settings`
+selects the backend from the env vars. Short-lived state (5-min auth
+codes, 15-min `/setup` sessions, the transient code→key binding) stays
+in process memory regardless of backend.
+
+Local dev parity: a new `docker-compose.yml` boots the MCP server +
+a local Redis with append-only persistence so the Redis code path is
+exercised without an external dependency. See `README.md` for the
+full setup.
+
+Tests: 12 new in `tests/test_storage.py` cover both backends (in-memory
+caps + eviction, Redis round-trip via `fakeredis`, Fernet encryption-at-
+rest verification, graceful handling of `MCP_ENCRYPTION_KEY` rotation,
+TTL application). `tests/test_auth.py` updated to use the new store
+abstraction. 157 unit tests pass (was 145).
+
+New runtime deps: `redis>=5.0`, `cryptography>=42`. Dev dep:
+`fakeredis>=2.21`.
+
+Privacy posture documented in `PRIVACY.md` § 2.b. Operator picks the
+backend implicitly via env vars; no behavior change for stdio or for
+HTTP-mode deployments that don't set `REDIS_URL`.
+
 ### Changed (MCP spec 2025-11-25 alignment + doc sync — 2026-05-19) — **BREAKING**
 
 Production-quality audit pass against the latest MCP spec revision

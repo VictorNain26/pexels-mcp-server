@@ -1,0 +1,62 @@
+# Local development stack with Redis-backed token persistence.
+#
+# Boots the MCP server (HTTP transport) + a local Redis with persistence so
+# you can exercise the same code path as production (Upstash / Redis Cloud)
+# without leaving your laptop. The Redis container is loopback-only — no
+# port published beyond the compose network.
+#
+# Usage:
+#   docker compose up --build
+#   # then point any MCP client at http://127.0.0.1:8000/mcp
+#
+# To stop and wipe the Redis volume (forces re-/setup for every client):
+#   docker compose down -v
+#
+# In production on Koyeb, do NOT use this file. Instead:
+#   1. Create a Redis service on Upstash (or your provider of choice).
+#   2. Set REDIS_URL=rediss://... and MCP_ENCRYPTION_KEY=<fernet key> as env
+#      vars on the existing pexels-mcp Koyeb service.
+#   3. Redeploy. The server picks up the Redis backend automatically.
+
+services:
+  redis:
+    image: redis:7-alpine
+    # Append-only file gives durability across container restarts.
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --maxmemory
+      - "256mb"
+      - --maxmemory-policy
+      - allkeys-lru
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  pexels-mcp:
+    build: .
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      TRANSPORT: streamable-http
+      HOST: 0.0.0.0
+      PORT: "8000"
+      MCP_SERVER_URL: http://127.0.0.1:8000
+      REDIS_URL: redis://redis:6379/0
+      # Generate locally once: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+      # Then export it before `docker compose up` so each dev keeps the same key
+      # across rebuilds (otherwise existing tokens become un-decryptable).
+      MCP_ENCRYPTION_KEY: ${MCP_ENCRYPTION_KEY:?Set MCP_ENCRYPTION_KEY in .env or your shell. Generate with python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'}
+      LOG_FORMAT: text
+      LOG_LEVEL: INFO
+    ports:
+      - "127.0.0.1:8000:8000"
+
+volumes:
+  redis-data:

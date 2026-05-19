@@ -30,7 +30,8 @@ src/pexels_mcp_server/
   __init__.py          version
   __main__.py          CLI entry point, transport selection, OAuth env validation, HTTP middleware wiring
   server.py            FastMCP server, tool registration, OAuth wiring (HTTP mode)
-  auth.py              In-process OAuth Authorization Server (PexelsOAuthProvider) + /setup BYOK form
+  auth.py              OAuth Authorization Server (PexelsOAuthProvider) + /setup BYOK form
+  storage.py           TokenStore Protocol + InMemoryTokenStore + RedisTokenStore (Fernet-encrypted Pexels keys)
   client.py            Async httpx client wrapping the Pexels REST API
   schemas.py           Pydantic v2 input models (extra="forbid")
   formatters.py        Token-lean dict projections (returned to FastMCP as structuredContent)
@@ -47,6 +48,7 @@ tests/
   test_server_config.py    FastMCP wiring smoke tests (stateless_http, json_response)
   test_server_http.py      End-to-end OAuth discovery (RFC 9728 + RFC 8414 + WWW-Authenticate) via httpx.ASGITransport
   test_setup_flow.py       End-to-end BYOK /setup form (GET/POST, valid key, invalid key, expired session)
+  test_storage.py          TokenStore backends (in-memory + Redis via fakeredis, Fernet encryption-at-rest)
   test_transport.py        ASGI middleware (healthz, rate limit, X-Forwarded-For parsing, pexels_key extractor)
 ```
 

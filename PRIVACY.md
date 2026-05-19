@@ -30,23 +30,53 @@ a token-lean JSON envelope and returned to the MCP client.
 
 ## 2. What the server stores
 
-**Nothing on disk.** The server has no database, no on-disk cache, no
-session store:
+The persistence posture depends on the operator's deployment configuration.
 
-- No file or database holds user-supplied data across restarts. A process
-  restart drops every Bearer token, every authorization code, every
-  registered OAuth client, and every bound Pexels key — clients re-auth
-  transparently on the next call.
-- The Pexels API key, when supplied via the OAuth setup step, lives in
-  process memory bound to the access token for the token's 30-day lifetime
-  and is then released. When supplied via the `X-Pexels-Api-Key` header it
-  is read from the request scope on every call and never retained beyond
-  the request. There is no per-user key vault, no log entry that contains
-  the key.
-- Bearer tokens issued by `/token` live in process memory only, expire after
-  30 days (or earlier on process restart), and are never logged.
-- Tool arguments and Pexels responses live in process memory for the
-  duration of a single request and are then released.
+### 2.a. Default (in-memory, `REDIS_URL` unset)
+
+**Nothing on disk.** No database, no on-disk cache, no session store:
+
+- A process restart drops every Bearer token, every authorization code,
+  every registered OAuth client, and every bound Pexels key — clients
+  re-auth transparently on the next call.
+- The Pexels API key bound during the OAuth setup lives in process memory
+  for the access token's 30-day lifetime and is then released. When
+  supplied via the `X-Pexels-Api-Key` header it is read from the request
+  scope on every call and never retained beyond the request.
+- Bearer tokens issued by `/token` live in process memory only and are
+  never logged.
+
+### 2.b. Persistent (Redis-backed, `REDIS_URL` set)
+
+The operator opts into persistent OAuth state by setting `REDIS_URL` (and
+`MCP_ENCRYPTION_KEY`). In this mode three pieces of state live in Redis
+under the `mcp:` namespace:
+
+- `mcp:client:<client_id>` — DCR client metadata (no PII, just redirect
+  URIs and OAuth client info).
+- `mcp:token:<access_token>` — issued access token (client_id, scopes,
+  expiry, audience). 30-day TTL.
+- `mcp:pexels:<access_token>` — the bound Pexels API key, **encrypted at
+  rest with Fernet (AES-128-CBC + HMAC-SHA256)** using the operator's
+  `MCP_ENCRYPTION_KEY`. 30-day TTL.
+
+A leaked Redis snapshot alone is **not** enough to recover any user's
+Pexels API key — the operator's `MCP_ENCRYPTION_KEY` env var is the second
+factor. Rotating it invalidates every stored binding gracefully (users
+transparently re-walk `/setup`).
+
+Short-lived state (authorization codes, pending `/setup` sessions, the
+transient code→key binding) always lives in process memory regardless of
+backend — their 5-minute and 15-minute TTLs make persistence
+counterproductive.
+
+### 2.c. Always — never persisted
+
+- **Tool arguments and Pexels responses** live in process memory for the
+  duration of a single request and are then released. They are never
+  written to Redis, disk, or a log line.
+- **The `X-Pexels-Api-Key` request header** (fallback path) is read from
+  the request scope on every call and never retained.
 
 The Streamable HTTP transport runs with `stateless_http=True`, so there is
 no MCP session identifier allocated server-side either.
@@ -85,6 +115,12 @@ The server makes outbound HTTPS calls to:
 - `api.pexels.com` — the Pexels REST API, with the caller's Pexels API key
   in the `Authorization` header. Pexels' privacy practices are governed by
   the [Pexels Privacy Policy](https://www.pexels.com/privacy-policy/).
+- **The Redis endpoint configured via `REDIS_URL`** (when set) — encrypted
+  Pexels-key ciphertext + access-token metadata over TLS (`rediss://`).
+  Pick a provider whose privacy and data-residency story matches your
+  threat model: [Upstash](https://upstash.com/trust/privacy), [Redis
+  Cloud](https://redis.com/legal/privacy-policy/), or self-hosted (in
+  which case the operator is the data processor).
 
 No other outbound calls are made. The server **does not** fetch thumbnails
 or any binary content — it only returns the `image_url` / `video_url`
@@ -106,7 +142,11 @@ pays their own Pexels quota.
 
 ## 6. Retention
 
-Zero. See section 2.
+- **In-memory mode** (`REDIS_URL` unset): zero. Wiped on every process restart.
+- **Redis-backed mode** (`REDIS_URL` set): up to 30 days for access tokens
+  + bound Pexels keys, refreshed on each token re-issuance. The operator
+  controls retention by tuning Redis maxmemory + eviction policy; the
+  server itself never extends the TTL beyond the access-token lifetime.
 
 ## 7. Children
 

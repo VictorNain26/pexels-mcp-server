@@ -63,7 +63,23 @@ For power-user clients that prefer the per-request pattern (Cursor stdio bridges
 | `LOG_LEVEL` | no | Default `INFO`. |
 | `LOG_FORMAT` | no | `text` or `json` (default `json` in HTTP mode for log-drain ingestion). |
 | `MCP_TRUSTED_PROXY_HOPS` | no | Number of trusted proxies in front of the app, default `1` (Koyeb's LB). Used to read the real client IP from `X-Forwarded-For` from the *right* (server-controlled) instead of the *left* (caller-spoofable). Set to `2` if you front Koyeb with Cloudflare; `0` disables `X-Forwarded-For` parsing entirely. |
+| `REDIS_URL` | no (recommended for prod) | When set, OAuth state (DCR clients, access tokens, bound Pexels keys) lives in Redis and **survives server restarts** — users keep their session through a Koyeb rolling deploy. Supports `rediss://` (TLS) for Upstash / Redis Cloud / Aiven. Unset → in-process store (wipes on restart, every user re-walks `/setup`). |
+| `MCP_ENCRYPTION_KEY` | yes when `REDIS_URL` is set | 32-byte url-safe base64 key used to encrypt every bound Pexels API key at rest in Redis (Fernet = AES-128-CBC + HMAC-SHA256). Generate one with `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`. A leaked Redis snapshot alone is not enough to recover any Pexels key — this env var is the second factor. Rotating it invalidates all bindings (graceful: users transparently re-walk `/setup`). |
 | `PEXELS_API_KEY` | **stdio only** | Used by local stdio clients (Claude Desktop, Cursor) to inject their key once at process start. **Ignored in `streamable-http` mode** — callers always provide a key via BYOK setup or the `X-Pexels-Api-Key` header. |
+
+### Persistent sessions (Redis)
+
+By default the OAuth state lives in process memory and is wiped on every server restart. This means every user has to re-walk OAuth and re-paste their Pexels key after each Koyeb deploy. To make sessions survive restarts (the pattern used by every production MCP connector), point the server at any Redis instance:
+
+| Provider | Tier | URL shape | Notes |
+|---|---|---|---|
+| [Upstash Redis](https://upstash.com/) | Free: 10k commands/day, 256 MB | `rediss://default:<token>@<host>.upstash.io:6379` | Serverless, TLS-only, no ops. Sweet spot for this server's volume (1 SET per OAuth flow + 1 GET per tool call). |
+| [Redis Cloud Essentials](https://redis.com/cloud/) | Free: 30 MB, single DB | `redis://default:<password>@<host>:<port>` | Smaller but officially Redis Inc. |
+| Self-hosted (Docker / Koyeb service / VPS) | — | `redis://<host>:6379` | Run any Redis ≥ 6. See `docker-compose.yml` in this repo for a local dev setup. |
+
+Add both `REDIS_URL` and `MCP_ENCRYPTION_KEY` to the Koyeb service env (use `save_only=true` then redeploy, or set them at create time). Existing in-memory tokens are dropped on the next deploy; new tokens land in Redis. There's nothing to migrate.
+
+The Pexels API key is **encrypted client-side with Fernet** before being written to Redis. A leaked Redis dump alone yields opaque ciphertext — recovering any key requires both the dump and the `MCP_ENCRYPTION_KEY` env var. Rotating that env var invalidates every existing binding (users transparently re-walk `/setup`); plan rotation around your own threat model.
 
 ### Rate limiting
 
@@ -157,7 +173,7 @@ The `WWW-Authenticate` header on the unauthenticated `/mcp` call is what makes c
 | **Claude Code** | `claude mcp add pexels --transport http https://<host>/mcp`. The CLI opens the browser at `/setup` on first call so you can paste your key. |
 | **MCP Inspector** | `npx @modelcontextprotocol/inspector` → paste the URL → it discovers OAuth automatically and opens `/setup` in the browser. |
 
-Tokens are valid for 30 days; the client re-runs the OAuth handshake transparently when they expire and you'll be asked for the key again at that point. The bound key also disappears on every server restart (Koyeb rolling deploys, dependency updates) since the store is in-memory only — expect one re-`/setup` per deploy. Power-user setups that prefer to inject the key per call can skip `/setup` and send `X-Pexels-Api-Key` as a header on every request instead — the server falls back to that header when no key is bound to the access token.
+Tokens are valid for 30 days; the client re-runs the OAuth handshake transparently when they expire and you'll be asked for the key again at that point. With the in-memory backend (the default), the bound key also disappears on every server restart — expect one re-`/setup` per Koyeb deploy. **Configure `REDIS_URL` (see [Persistent sessions](#persistent-sessions-redis) above) to make the binding survive restarts**, matching the behaviour of every production MCP connector. Power-user setups that prefer to inject the key per call can skip `/setup` and send `X-Pexels-Api-Key` as a header on every request instead — the server falls back to that header when no key is bound to the access token.
 
 ## Local development
 
@@ -175,6 +191,22 @@ HOST=127.0.0.1 PORT=8000 \
 MCP_SERVER_URL=http://127.0.0.1:8000 \
   uv run pexels-mcp-server
 ```
+
+### Run the full stack locally with Redis (parity with the prod persistence path)
+
+```bash
+# Generate a Fernet key once, save it to .env or your shell:
+echo "MCP_ENCRYPTION_KEY=$(python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')" > .env
+
+# Boot the MCP server + a local Redis with persistence:
+docker compose up --build
+# -> server on http://127.0.0.1:8000, Redis on the compose-internal network only
+
+# Tear down (the `-v` flag wipes the Redis volume):
+docker compose down -v
+```
+
+This exercises the exact same `RedisTokenStore` code path you get with Upstash in production. Tokens and bound Pexels keys persist across container restarts as long as the named volume is kept.
 
 Then point any client at `http://127.0.0.1:8000/mcp`. The MCP Inspector is the fastest way to exercise the five tools without going through claude.ai — the OAuth handshake completes silently and you can immediately call tools (after setting `X-Pexels-Api-Key` in the Inspector headers tab).
 
