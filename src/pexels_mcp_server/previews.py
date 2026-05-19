@@ -21,8 +21,14 @@ from mcp.server.fastmcp.utilities.types import Image
 from .constants import (
     PREVIEW_FETCH_TIMEOUT_SECONDS,
     PREVIEW_MAX_BYTES,
+    PREVIEW_MAX_CONCURRENT_FETCHES,
     USER_AGENT,
 )
+
+# Module-level cap on concurrent CDN fetches. Shared across all MCP sessions
+# on this process so a burst of pexels_preview_media calls cannot saturate
+# the httpx connection pool or hammer images.pexels.com.
+_PREVIEW_SEMAPHORE = asyncio.Semaphore(PREVIEW_MAX_CONCURRENT_FETCHES)
 
 logger = logging.getLogger("pexels_mcp_server.previews")
 
@@ -46,10 +52,11 @@ _FORMAT_FROM_MIME = {
 
 
 async def _fetch_one(client: httpx.AsyncClient, url: str) -> PreviewResult:
-    try:
-        response = await client.get(url)
-    except httpx.HTTPError as exc:
-        return PreviewResult(url=url, image=None, error=f"network error: {exc}")
+    async with _PREVIEW_SEMAPHORE:
+        try:
+            response = await client.get(url)
+        except httpx.HTTPError as exc:
+            return PreviewResult(url=url, image=None, error=f"network error: {exc}")
     if response.status_code != httpx.codes.OK:
         return PreviewResult(
             url=url,
