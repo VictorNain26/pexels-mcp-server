@@ -590,7 +590,12 @@ async def pexels_preview_media(
         if result.image is not None:
             summary_lines.append(f"  {index}. {result.url} - ok")
         else:
-            summary_lines.append(f"  {index}. {result.url} - failed: {result.error}")
+            # Sanitize before model injection: httpx exception strings can
+            # contain TLS cert details, IP addresses or redirect chains we
+            # do not want flowing into the agent context.
+            raw_error = result.error or "unknown error"
+            safe_error = raw_error.replace("\n", " ").replace("\r", " ")[:80]
+            summary_lines.append(f"  {index}. {result.url} - failed: {safe_error}")
     blocks.append("\n".join(summary_lines))
     for result in results:
         if result.image is not None:

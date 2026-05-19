@@ -69,11 +69,18 @@ async def _fetch_one(client: httpx.AsyncClient, url: str) -> PreviewResult:
 
 
 async def fetch_thumbnails(urls: list[str]) -> list[PreviewResult]:
-    """Fetch a batch of CDN thumbnails concurrently. Order is preserved."""
+    """Fetch a batch of CDN thumbnails concurrently. Order is preserved.
+
+    Redirects are intentionally disabled: the URL allowlist runs at the
+    schema layer on the *initial* host only, so a CDN redirect to an
+    arbitrary location would bypass it. In practice ``images.pexels.com``
+    does not redirect; an unexpected 3xx becomes a tool-facing error
+    instead of a silent SSRF vector.
+    """
     async with httpx.AsyncClient(
         timeout=PREVIEW_FETCH_TIMEOUT_SECONDS,
         headers={"User-Agent": USER_AGENT},
-        follow_redirects=True,
+        follow_redirects=False,
     ) as client:
         coroutines = [_fetch_one(client, url) for url in urls]
         return await asyncio.gather(*coroutines)
