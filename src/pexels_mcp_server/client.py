@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 from datetime import datetime, timezone
 from typing import Any
 
@@ -27,6 +28,18 @@ from .constants import (
     USER_AGENT,
     VIDEOS_PREFIX,
 )
+
+
+def _backoff_delay() -> float:
+    """Compute a jittered backoff delay for the single retry path.
+
+    The previous fixed 1.0s blocked the event loop hot path during a Pexels
+    5xx. With bursty AI traffic (5-30 calls per session) this stalled the
+    whole session. A short base + jitter keeps retries useful without
+    starving other coroutines.
+    """
+    return RETRY_BACKOFF_SECONDS * (0.25 + random.random() * 0.5)
+
 
 logger = logging.getLogger("pexels_mcp_server.client")
 
@@ -141,7 +154,7 @@ class PexelsClient:
                 last_exc = exc
                 if attempt == 1:
                     logger.warning("Pexels request to %s failed (%s). Retrying once.", path, exc)
-                    await asyncio.sleep(RETRY_BACKOFF_SECONDS)
+                    await asyncio.sleep(_backoff_delay())
                     continue
                 raise PexelsAPIError(0, f"network error: {exc}") from exc
 
@@ -162,7 +175,7 @@ class PexelsClient:
                 raise PexelsRateLimitError(rate_limit.get("reset"))
             if 500 <= response.status_code < 600 and attempt == 1:
                 logger.warning("Pexels returned %s. Retrying once.", response.status_code)
-                await asyncio.sleep(RETRY_BACKOFF_SECONDS)
+                await asyncio.sleep(_backoff_delay())
                 continue
             raise PexelsAPIError(response.status_code, response.text[:300])
 
