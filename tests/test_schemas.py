@@ -123,19 +123,22 @@ def test_collection_media_accepts_alphanumeric_with_dashes() -> None:
 # --- include_previews knob ------------------------------------------------
 
 
-def test_include_previews_defaults_to_true() -> None:
-    """Rich content with inline thumbnails is the default for every list /
-    lookup tool. Enterprise users get the best UX out of the box."""
-    assert SearchPhotosParams(query="x").include_previews is True
-    assert GetPhotoParams(photo_id=1).include_previews is True
-    assert PopularVideosParams().include_previews is True
-    assert CollectionMediaParams(collection_id="abc").include_previews is True
+def test_include_previews_defaults_to_false() -> None:
+    """Default false (since 2026-05-19): embedding base64 thumbnails on
+    every search burns vision tokens and fills the claude.ai conversation
+    context fast. The Markdown image syntax in the LLM's response renders
+    inline in claude.ai natively, no embedded previews required."""
+    assert SearchPhotosParams(query="x").include_previews is False
+    assert GetPhotoParams(photo_id=1).include_previews is False
+    assert PopularVideosParams().include_previews is False
+    assert CollectionMediaParams(collection_id="abc").include_previews is False
 
 
-def test_include_previews_can_be_disabled() -> None:
-    """Bulk operations and token-sensitive workloads can opt out."""
-    params = SearchPhotosParams(query="x", include_previews=False)
-    assert params.include_previews is False
+def test_include_previews_can_be_enabled() -> None:
+    """Opt in when the agent wants a vision-pick on top of Pexels'
+    relevance ranking."""
+    params = SearchPhotosParams(query="x", include_previews=True)
+    assert params.include_previews is True
 
 
 # --- null coercion (defensive against MCP clients that serialize defaults
@@ -152,7 +155,7 @@ def test_response_format_null_is_coerced_to_default() -> None:
 
 def test_include_previews_null_is_coerced_to_default() -> None:
     params = SearchPhotosParams(query="x", include_previews=None)  # type: ignore[arg-type]
-    assert params.include_previews is True
+    assert params.include_previews is False
 
 
 def test_page_null_is_coerced_to_default() -> None:
