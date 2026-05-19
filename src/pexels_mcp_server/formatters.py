@@ -1,8 +1,11 @@
-"""Response formatters: turn raw Pexels payloads into JSON or Markdown strings.
+"""Response formatters: turn raw Pexels payloads into JSON, Markdown, or rich
+MCP content (text + inline images).
 
 The JSON projections strip noisy fields (per-resolution URLs, OAuth flags) and
 expose only the data agents typically reason about. The Markdown variants are
-human-friendly summaries with the mandatory Pexels attribution footer.
+human-friendly summaries with the mandatory Pexels attribution footer. The
+rich-content builders produce ``list[TextContent | ImageContent]`` so MCP
+clients render thumbnails inline and vision-capable models can pick visually.
 """
 
 from __future__ import annotations
@@ -10,7 +13,10 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from mcp.types import ImageContent, TextContent
+
 from .constants import PEXELS_ATTRIBUTION
+from .previews import PreviewImage
 
 _ATTRIBUTION_FOOTER = f"\n\n---\n{PEXELS_ATTRIBUTION}\n"
 
@@ -307,3 +313,180 @@ def format_single_video(
             ensure_ascii=False,
         )
     return f"{video_to_markdown(payload)}{_ATTRIBUTION_FOOTER}"
+
+
+# --------------------------------------------------------------- rich content
+#
+# The "rich" path returns a ``list[TextContent | ImageContent]`` so MCP
+# clients that render multimodal content (claude.ai, Claude Desktop,
+# Cursor, ChatGPT desktop) display the thumbnails inline. The first
+# TextContent of every list is the same JSON / Markdown envelope the
+# string-returning formatters above produce, so an agent that ignores
+# images still has the full structured response it needs to paginate
+# and pick.
+#
+# Per-item layout:
+#   TextContent (caption: "#<id> alt — by <photographer> (WxH)")
+#   ImageContent (the thumbnail, omitted on fetch failure)
+#
+# A missing preview degrades to caption-only; the caller still has the
+# page URL and image URL in the JSON envelope to render manually.
+
+
+_ContentList = list[TextContent | ImageContent]
+
+
+def _text(text: str) -> TextContent:
+    return TextContent(type="text", text=text)
+
+
+def _image(preview: PreviewImage) -> ImageContent:
+    return ImageContent(type="image", data=preview.data_base64, mimeType=preview.mime_type)
+
+
+def _photo_caption(photo: dict[str, Any], idx: int) -> str:
+    parts = [
+        f"#{idx + 1} — id={_safe(photo.get('id'), 'unknown')}",
+        _safe(photo.get("alt"), "(no alt)"),
+        f"by {_safe(photo.get('photographer'), 'unknown')}",
+        f"({_safe(photo.get('width'), '?')}x{_safe(photo.get('height'), '?')})",
+    ]
+    return " — ".join(parts)
+
+
+def _video_caption(video: dict[str, Any], idx: int) -> str:
+    user = video.get("user") or {}
+    parts = [
+        f"#{idx + 1} — id={_safe(video.get('id'), 'unknown')}",
+        f"{_safe(video.get('duration'), '?')}s",
+        f"{_safe(video.get('width'), '?')}x{_safe(video.get('height'), '?')}",
+        f"by {_safe(user.get('name'), 'unknown')}",
+    ]
+    return " — ".join(parts)
+
+
+def build_photo_list_rich(
+    payload: dict[str, Any],
+    rate_limit: dict[str, Any] | None,
+    previews: list[PreviewImage | None],
+    response_format: str,
+) -> _ContentList:
+    """Photo list as rich content. First block = JSON/Markdown envelope."""
+    photos = payload.get("photos") or []
+    envelope_str = format_photo_list(payload, rate_limit, response_format)
+    out: _ContentList = [_text(envelope_str)]
+    for i, photo in enumerate(photos):
+        out.append(_text(_photo_caption(photo, i)))
+        preview = previews[i] if i < len(previews) else None
+        if preview is not None:
+            out.append(_image(preview))
+    return out
+
+
+def build_video_list_rich(
+    payload: dict[str, Any],
+    rate_limit: dict[str, Any] | None,
+    previews: list[PreviewImage | None],
+    response_format: str,
+) -> _ContentList:
+    """Video list as rich content. Thumbnails come from the ``image`` field."""
+    videos = payload.get("videos") or []
+    envelope_str = format_video_list(payload, rate_limit, response_format)
+    out: _ContentList = [_text(envelope_str)]
+    for i, video in enumerate(videos):
+        out.append(_text(_video_caption(video, i)))
+        preview = previews[i] if i < len(previews) else None
+        if preview is not None:
+            out.append(_image(preview))
+    return out
+
+
+def build_single_photo_rich(
+    payload: dict[str, Any],
+    rate_limit: dict[str, Any] | None,
+    preview: PreviewImage | None,
+    response_format: str,
+) -> _ContentList:
+    """Single photo lookup as rich content."""
+    envelope_str = format_single_photo(payload, rate_limit, response_format)
+    out: _ContentList = [_text(envelope_str)]
+    if preview is not None:
+        out.append(_image(preview))
+    return out
+
+
+def build_single_video_rich(
+    payload: dict[str, Any],
+    rate_limit: dict[str, Any] | None,
+    preview: PreviewImage | None,
+    response_format: str,
+) -> _ContentList:
+    """Single video lookup as rich content. Thumbnail = the video's preview frame."""
+    envelope_str = format_single_video(payload, rate_limit, response_format)
+    out: _ContentList = [_text(envelope_str)]
+    if preview is not None:
+        out.append(_image(preview))
+    return out
+
+
+def build_collection_media_rich(
+    payload: dict[str, Any],
+    rate_limit: dict[str, Any] | None,
+    previews: list[PreviewImage | None],
+    response_format: str,
+) -> _ContentList:
+    """Collection media (mixed photos + videos) as rich content.
+
+    The collection endpoint returns a single ``media`` list with ``type``
+    discriminator (``Photo`` / ``Video``). Previews come from
+    ``src.medium`` for photos and ``image`` for videos. The caller is
+    responsible for resolving the right URL per item; this function
+    just pairs each media slot with its (possibly missing) preview.
+    """
+    media = payload.get("media") or []
+    envelope_str = format_collection_media(payload, rate_limit, response_format)
+    out: _ContentList = [_text(envelope_str)]
+    for i, item in enumerate(media):
+        if item.get("type") == "Video":
+            caption = _video_caption(item, i)
+        else:
+            caption = _photo_caption(item, i)
+        out.append(_text(caption))
+        preview = previews[i] if i < len(previews) else None
+        if preview is not None:
+            out.append(_image(preview))
+    return out
+
+
+def photo_preview_url(photo: dict[str, Any]) -> str | None:
+    """Pick the canonical thumbnail URL for a Pexels photo payload.
+
+    ``src.medium`` is the right trade-off: ~350x350 JPEG at ~30-100 KB,
+    enough for a vision model to assess the image, light enough that
+    fetching 15 in parallel stays under a second.
+    """
+    src = photo.get("src") or {}
+    medium = src.get("medium")
+    if isinstance(medium, str) and medium:
+        return medium
+    return None
+
+
+def video_preview_url(video: dict[str, Any]) -> str | None:
+    """Pick the canonical preview frame URL for a Pexels video payload.
+
+    Pexels exposes the still preview at ``image``; the various
+    ``video_pictures[].picture`` URLs are storyboard frames, not the
+    canonical thumbnail.
+    """
+    image = video.get("image")
+    if isinstance(image, str) and image:
+        return image
+    return None
+
+
+def collection_item_preview_url(item: dict[str, Any]) -> str | None:
+    """Pick the thumbnail URL for a collection-media item (Photo or Video)."""
+    if item.get("type") == "Video":
+        return video_preview_url(item)
+    return photo_preview_url(item)

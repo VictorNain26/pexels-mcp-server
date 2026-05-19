@@ -85,6 +85,13 @@ The server makes outbound HTTPS calls to:
 - `api.pexels.com` — the Pexels REST API, with the caller's Pexels API key
   in the `Authorization` header. Pexels' privacy practices are governed by
   the [Pexels Privacy Policy](https://www.pexels.com/privacy-policy/).
+- `images.pexels.com` — the Pexels CDN, called without credentials to fetch
+  the result thumbnails that the server embeds as MCP `ImageContent`
+  blocks so vision-capable clients can render the images inline. The host
+  is hardcoded; only `https://images.pexels.com/...` URLs returned in a
+  preceding Pexels search response are fetched. Thumbnails live in a
+  short-lived in-memory cache (10 min TTL, 256 entries max, FIFO) so the
+  same image is not re-downloaded across consecutive searches.
 
 No other outbound calls are made. There is no telemetry beacon, no analytics
 SDK, no metrics endpoint, no remote configuration fetch.

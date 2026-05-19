@@ -12,14 +12,15 @@ from __future__ import annotations
 
 import logging
 import os
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from typing import Any
 
 from mcp.server.auth.settings import AuthSettings, ClientRegistrationOptions
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
-from mcp.types import ToolAnnotations
+from mcp.types import ImageContent, TextContent, ToolAnnotations
 from pydantic import AnyHttpUrl, ValidationError
 
 from .auth import MCP_SCOPE, PexelsOAuthProvider
@@ -30,13 +31,22 @@ from .client import (
     PexelsRateLimitError,
 )
 from .formatters import (
+    build_collection_media_rich,
+    build_photo_list_rich,
+    build_single_photo_rich,
+    build_single_video_rich,
+    build_video_list_rich,
+    collection_item_preview_url,
     format_collection_list,
     format_collection_media,
     format_photo_list,
     format_single_photo,
     format_single_video,
     format_video_list,
+    photo_preview_url,
+    video_preview_url,
 )
+from .previews import PreviewFetcher
 from .schemas import (
     CollectionMediaParams,
     CollectionMediaType,
@@ -55,31 +65,43 @@ from .schemas import (
     VideoSize,
 )
 
+# Tool return shape. ``str`` is what FastMCP wraps as a single TextContent
+# (legacy plain-text path when ``include_previews=False``); the explicit
+# list form ships thumbnails as MCP ImageContent blocks for inline render.
+ToolResult = str | list[TextContent | ImageContent]
+
 logger = logging.getLogger("pexels_mcp_server.server")
 
 
 @dataclass
 class AppContext:
-    """Shared lifespan context. Holds the single ``PexelsClient`` instance."""
+    """Shared lifespan context. Holds the long-lived async clients."""
 
     client: PexelsClient
+    preview_fetcher: PreviewFetcher
 
 
 @asynccontextmanager
 async def _lifespan(_server: FastMCP) -> AsyncIterator[AppContext]:
-    """Boot a single ``PexelsClient`` for the server lifetime.
+    """Boot the long-lived async clients for the server lifetime.
 
-    The client never stores a Pexels key. The effective key is resolved per
-    tool call via ``_resolve_api_key`` (BYOK binding via OAuth setup first,
-    ``X-Pexels-Api-Key`` header second, env var third in stdio).
+    Two clients are spun up:
+
+    - :class:`PexelsClient` against ``api.pexels.com``. Never stores a key;
+      the effective key per call is resolved via ``_resolve_api_key`` (BYOK
+      via OAuth setup → ``X-Pexels-Api-Key`` header → env var in stdio).
+    - :class:`PreviewFetcher` against ``images.pexels.com``. Used to embed
+      result thumbnails as MCP ``ImageContent`` for vision-capable clients.
     """
     client = PexelsClient()
-    logger.info("Pexels client ready (transport managed by FastMCP).")
+    preview_fetcher = PreviewFetcher()
+    logger.info("Pexels and preview clients ready (transport managed by FastMCP).")
     try:
-        yield AppContext(client=client)
+        yield AppContext(client=client, preview_fetcher=preview_fetcher)
     finally:
         await client.aclose()
-        logger.info("Pexels client closed.")
+        await preview_fetcher.aclose()
+        logger.info("Pexels and preview clients closed.")
 
 
 def _resolve_api_key(ctx: Context) -> str | None:  # type: ignore[type-arg]
@@ -406,6 +428,12 @@ def _client(ctx: Context) -> PexelsClient:  # type: ignore[type-arg]
     return app_ctx.client
 
 
+def _previews(ctx: Context) -> PreviewFetcher:  # type: ignore[type-arg]
+    """Pull the lifespan-scoped preview fetcher out of the request context."""
+    app_ctx: AppContext = ctx.request_context.lifespan_context
+    return app_ctx.preview_fetcher
+
+
 def _format_error(exc: Exception) -> str:
     """Render an exception as a tool-facing error string.
 
@@ -420,6 +448,21 @@ def _format_error(exc: Exception) -> str:
     if isinstance(exc, PexelsAuthError | PexelsRateLimitError | PexelsAPIError):
         return f"Error: {exc}"
     return f"Unexpected error: {exc.__class__.__name__}: {exc}"
+
+
+async def _fetch_previews_for_items(
+    ctx: Context,  # type: ignore[type-arg]
+    items: list[dict[str, Any]],
+    url_picker: Callable[[dict[str, Any]], str | None],
+) -> list[Any]:
+    """Resolve a preview URL for each payload item and fetch in parallel.
+
+    Returns one entry per input item (``PreviewImage`` or ``None``). The
+    fetcher swallows network/host/oversize failures so a transient CDN hiccup
+    cannot fail the whole tool call.
+    """
+    urls = [url_picker(item) for item in items]
+    return await _previews(ctx).fetch_many(urls)
 
 
 @mcp.tool(
@@ -443,7 +486,8 @@ async def pexels_search_photos(
     page: int = 1,
     per_page: int = 15,
     response_format: ResponseFormat = ResponseFormat.JSON,
-) -> str:
+    include_previews: bool = True,
+) -> ToolResult:
     """Search Pexels for free, commercially usable stock photos.
 
     USE WHEN: the user needs an illustration for an article, slide,
@@ -480,6 +524,7 @@ async def pexels_search_photos(
             page=page,
             per_page=per_page,
             response_format=response_format,
+            include_previews=include_previews,
         )
         payload, rate_limit = await _client(ctx).search_photos(
             api_key=_resolve_api_key(ctx),
@@ -491,7 +536,12 @@ async def pexels_search_photos(
             page=params.page,
             per_page=params.per_page,
         )
-        return format_photo_list(payload, rate_limit, params.response_format.value)
+        if not params.include_previews:
+            return format_photo_list(payload, rate_limit, params.response_format.value)
+        previews = await _fetch_previews_for_items(
+            ctx, payload.get("photos") or [], photo_preview_url
+        )
+        return build_photo_list_rich(payload, rate_limit, previews, params.response_format.value)
     except Exception as exc:
         return _format_error(exc)
 
@@ -506,7 +556,8 @@ async def pexels_curated_photos(
     page: int = 1,
     per_page: int = 15,
     response_format: ResponseFormat = ResponseFormat.JSON,
-) -> str:
+    include_previews: bool = True,
+) -> ToolResult:
     """Browse Pexels' editor-curated photo feed (no search query).
 
     USE WHEN: the user wants inspiration or "anything tasteful" without a
@@ -522,13 +573,19 @@ async def pexels_curated_photos(
             page=page,
             per_page=per_page,
             response_format=response_format,
+            include_previews=include_previews,
         )
         payload, rate_limit = await _client(ctx).curated_photos(
             api_key=_resolve_api_key(ctx),
             page=params.page,
             per_page=params.per_page,
         )
-        return format_photo_list(payload, rate_limit, params.response_format.value)
+        if not params.include_previews:
+            return format_photo_list(payload, rate_limit, params.response_format.value)
+        previews = await _fetch_previews_for_items(
+            ctx, payload.get("photos") or [], photo_preview_url
+        )
+        return build_photo_list_rich(payload, rate_limit, previews, params.response_format.value)
     except Exception as exc:
         return _format_error(exc)
 
@@ -542,7 +599,8 @@ async def pexels_get_photo(
     ctx: Context,  # type: ignore[type-arg]
     photo_id: int,
     response_format: ResponseFormat = ResponseFormat.JSON,
-) -> str:
+    include_previews: bool = True,
+) -> ToolResult:
     """Fetch a single Pexels photo by its numeric id.
 
     USE WHEN: a previous search or a Pexels URL gave you a photo id and you
@@ -556,11 +614,19 @@ async def pexels_get_photo(
     ``{photo: {...}, rate_limit: {...}}``.
     """
     try:
-        params = GetPhotoParams(photo_id=photo_id, response_format=response_format)
+        params = GetPhotoParams(
+            photo_id=photo_id,
+            response_format=response_format,
+            include_previews=include_previews,
+        )
         payload, rate_limit = await _client(ctx).get_photo(
             params.photo_id, api_key=_resolve_api_key(ctx)
         )
-        return format_single_photo(payload, rate_limit, params.response_format.value)
+        if not params.include_previews:
+            return format_single_photo(payload, rate_limit, params.response_format.value)
+        url = photo_preview_url(payload)
+        preview = await _previews(ctx).fetch(url) if url else None
+        return build_single_photo_rich(payload, rate_limit, preview, params.response_format.value)
     except Exception as exc:
         return _format_error(exc)
 
@@ -579,7 +645,8 @@ async def pexels_search_videos(
     page: int = 1,
     per_page: int = 15,
     response_format: ResponseFormat = ResponseFormat.JSON,
-) -> str:
+    include_previews: bool = True,
+) -> ToolResult:
     """Search Pexels for free, commercially usable stock videos.
 
     USE WHEN: the user needs B-roll, a hero loop, an animated background,
@@ -607,6 +674,7 @@ async def pexels_search_videos(
             page=page,
             per_page=per_page,
             response_format=response_format,
+            include_previews=include_previews,
         )
         payload, rate_limit = await _client(ctx).search_videos(
             api_key=_resolve_api_key(ctx),
@@ -617,7 +685,12 @@ async def pexels_search_videos(
             page=params.page,
             per_page=params.per_page,
         )
-        return format_video_list(payload, rate_limit, params.response_format.value)
+        if not params.include_previews:
+            return format_video_list(payload, rate_limit, params.response_format.value)
+        previews = await _fetch_previews_for_items(
+            ctx, payload.get("videos") or [], video_preview_url
+        )
+        return build_video_list_rich(payload, rate_limit, previews, params.response_format.value)
     except Exception as exc:
         return _format_error(exc)
 
@@ -636,7 +709,8 @@ async def pexels_popular_videos(
     page: int = 1,
     per_page: int = 15,
     response_format: ResponseFormat = ResponseFormat.JSON,
-) -> str:
+    include_previews: bool = True,
+) -> ToolResult:
     """Browse Pexels' currently trending videos (no search query).
 
     USE WHEN: the user wants trending B-roll without a topic, or asks for
@@ -657,6 +731,7 @@ async def pexels_popular_videos(
             page=page,
             per_page=per_page,
             response_format=response_format,
+            include_previews=include_previews,
         )
         payload, rate_limit = await _client(ctx).popular_videos(
             api_key=_resolve_api_key(ctx),
@@ -667,7 +742,12 @@ async def pexels_popular_videos(
             page=params.page,
             per_page=params.per_page,
         )
-        return format_video_list(payload, rate_limit, params.response_format.value)
+        if not params.include_previews:
+            return format_video_list(payload, rate_limit, params.response_format.value)
+        previews = await _fetch_previews_for_items(
+            ctx, payload.get("videos") or [], video_preview_url
+        )
+        return build_video_list_rich(payload, rate_limit, previews, params.response_format.value)
     except Exception as exc:
         return _format_error(exc)
 
@@ -681,7 +761,8 @@ async def pexels_get_video(
     ctx: Context,  # type: ignore[type-arg]
     video_id: int,
     response_format: ResponseFormat = ResponseFormat.JSON,
-) -> str:
+    include_previews: bool = True,
+) -> ToolResult:
     """Fetch a single Pexels video by its numeric id.
 
     USE WHEN: a previous search or a Pexels URL gave you a video id and you
@@ -694,11 +775,19 @@ async def pexels_get_video(
     rate_limit: {...}}``.
     """
     try:
-        params = GetVideoParams(video_id=video_id, response_format=response_format)
+        params = GetVideoParams(
+            video_id=video_id,
+            response_format=response_format,
+            include_previews=include_previews,
+        )
         payload, rate_limit = await _client(ctx).get_video(
             params.video_id, api_key=_resolve_api_key(ctx)
         )
-        return format_single_video(payload, rate_limit, params.response_format.value)
+        if not params.include_previews:
+            return format_single_video(payload, rate_limit, params.response_format.value)
+        url = video_preview_url(payload)
+        preview = await _previews(ctx).fetch(url) if url else None
+        return build_single_video_rich(payload, rate_limit, preview, params.response_format.value)
     except Exception as exc:
         return _format_error(exc)
 
@@ -754,7 +843,8 @@ async def pexels_get_collection_media(
     page: int = 1,
     per_page: int = 15,
     response_format: ResponseFormat = ResponseFormat.JSON,
-) -> str:
+    include_previews: bool = True,
+) -> ToolResult:
     """Read the photos and videos inside a Pexels collection.
 
     USE WHEN: ``pexels_list_featured_collections`` gave you an id and you
@@ -774,6 +864,7 @@ async def pexels_get_collection_media(
             page=page,
             per_page=per_page,
             response_format=response_format,
+            include_previews=include_previews,
         )
         payload, rate_limit = await _client(ctx).get_collection_media(
             api_key=_resolve_api_key(ctx),
@@ -783,7 +874,14 @@ async def pexels_get_collection_media(
             page=params.page,
             per_page=params.per_page,
         )
-        return format_collection_media(payload, rate_limit, params.response_format.value)
+        if not params.include_previews:
+            return format_collection_media(payload, rate_limit, params.response_format.value)
+        previews = await _fetch_previews_for_items(
+            ctx, payload.get("media") or [], collection_item_preview_url
+        )
+        return build_collection_media_rich(
+            payload, rate_limit, previews, params.response_format.value
+        )
     except Exception as exc:
         return _format_error(exc)
 

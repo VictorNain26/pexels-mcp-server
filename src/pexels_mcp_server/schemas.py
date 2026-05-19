@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import re
 from enum import Enum
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -161,6 +162,21 @@ class Pagination(_StrictModel):
     )
 
 
+# Standalone field definition reused by every photo/video schema. Carries
+# the per-call switch that toggles inline ``ImageContent`` previews.
+def _include_previews_field() -> Any:
+    return Field(
+        default=True,
+        description=(
+            "When true (default), the server fetches the medium thumbnail "
+            "for each result from images.pexels.com and embeds it as an "
+            "MCP ImageContent block so vision-capable clients render the "
+            "image inline. Set to false to get the JSON envelope only "
+            "(saves bandwidth and vision tokens for bulk operations)."
+        ),
+    )
+
+
 class SearchPhotosParams(Pagination):
     """Inputs for ``pexels_search_photos``."""
 
@@ -189,6 +205,7 @@ class SearchPhotosParams(Pagination):
             "for inspection."
         ),
     )
+    include_previews: bool = _include_previews_field()
 
     @field_validator("color")
     @classmethod
@@ -214,6 +231,7 @@ class CuratedPhotosParams(Pagination):
     """Inputs for ``pexels_curated_photos``."""
 
     response_format: ResponseFormat = Field(default=ResponseFormat.JSON)
+    include_previews: bool = _include_previews_field()
 
 
 class GetPhotoParams(_StrictModel):
@@ -221,6 +239,7 @@ class GetPhotoParams(_StrictModel):
 
     photo_id: int = Field(ge=1, description="Pexels photo id.")
     response_format: ResponseFormat = Field(default=ResponseFormat.JSON)
+    include_previews: bool = _include_previews_field()
 
 
 class SearchVideosParams(Pagination):
@@ -235,6 +254,7 @@ class SearchVideosParams(Pagination):
         description="BCP-47 locale (e.g. en-US, fr-FR).",
     )
     response_format: ResponseFormat = Field(default=ResponseFormat.JSON)
+    include_previews: bool = _include_previews_field()
 
     @field_validator("locale")
     @classmethod
@@ -262,6 +282,7 @@ class PopularVideosParams(Pagination):
         description="Maximum video duration in seconds.",
     )
     response_format: ResponseFormat = Field(default=ResponseFormat.JSON)
+    include_previews: bool = _include_previews_field()
 
 
 class GetVideoParams(_StrictModel):
@@ -269,6 +290,7 @@ class GetVideoParams(_StrictModel):
 
     video_id: int = Field(ge=1, description="Pexels video id.")
     response_format: ResponseFormat = Field(default=ResponseFormat.JSON)
+    include_previews: bool = _include_previews_field()
 
 
 class FeaturedCollectionsParams(Pagination):
@@ -296,6 +318,7 @@ class CollectionMediaParams(Pagination):
         description="Sort by creation date (asc or desc).",
     )
     response_format: ResponseFormat = Field(default=ResponseFormat.JSON)
+    include_previews: bool = _include_previews_field()
 
     @field_validator("collection_id")
     @classmethod
