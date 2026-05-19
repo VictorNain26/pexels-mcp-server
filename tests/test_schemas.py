@@ -92,3 +92,29 @@ def test_search_photos_rejects_unknown_color() -> None:
 def test_search_photos_rejects_malformed_hex() -> None:
     with pytest.raises(ValidationError):
         SearchPhotosParams(query="dogs", color="#ff00ff")
+
+
+def test_search_photos_rejects_unknown_locale() -> None:
+    with pytest.raises(ValidationError) as excinfo:
+        SearchPhotosParams(query="dogs", locale="xx-XX")
+    assert "locale must be one of" in str(excinfo.value)
+
+
+def test_search_photos_accepts_supported_locale() -> None:
+    params = SearchPhotosParams(query="dogs", locale="fr-FR")
+    assert params.locale == "fr-FR"
+
+
+def test_collection_media_rejects_path_traversal() -> None:
+    with pytest.raises(ValidationError):
+        CollectionMediaParams(collection_id="../photos")
+
+
+def test_collection_media_rejects_slash() -> None:
+    with pytest.raises(ValidationError):
+        CollectionMediaParams(collection_id="abc/def")
+
+
+def test_collection_media_accepts_alphanumeric_with_dashes() -> None:
+    params = CollectionMediaParams(collection_id="abc-123_def")
+    assert params.collection_id == "abc-123_def"
