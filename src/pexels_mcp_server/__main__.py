@@ -7,19 +7,57 @@ control to FastMCP.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import sys
+from datetime import datetime, timezone
 from typing import Literal
 
 Transport = Literal["stdio", "streamable-http"]
 
 
-def _configure_logging() -> None:
+class _JsonFormatter(logging.Formatter):
+    """Compact JSON log formatter for hosted (HTTP) deployments.
+
+    Designed for one-line-per-record ingestion by Koyeb / Fly / Cloud Run
+    log drains. No new dependency required.
+    """
+
+    def format(self, record: logging.LogRecord) -> str:
+        payload: dict[str, object] = {
+            "ts": datetime.fromtimestamp(record.created, tz=timezone.utc).isoformat(),
+            "level": record.levelname,
+            "logger": record.name,
+            "msg": record.getMessage(),
+        }
+        if record.exc_info:
+            payload["exc"] = self.formatException(record.exc_info)
+        return json.dumps(payload, ensure_ascii=False)
+
+
+def _resolve_log_format(transport: Transport) -> str:
+    """Pick the log format. Explicit LOG_FORMAT env wins; otherwise default
+    to JSON in HTTP mode (Koyeb log filtering) and text in stdio mode
+    (so the Claude Desktop / Cursor stderr stays readable to humans).
+    """
+    explicit = os.environ.get("LOG_FORMAT", "").strip().lower()
+    if explicit in ("json", "text"):
+        return explicit
+    return "json" if transport == "streamable-http" else "text"
+
+
+def _configure_logging(fmt: str = "text") -> None:
     """Send every log line to stderr. stdout is reserved for JSON-RPC."""
+    level = os.environ.get("LOG_LEVEL", "INFO").upper()
+    if fmt == "json":
+        handler = logging.StreamHandler(sys.stderr)
+        handler.setFormatter(_JsonFormatter())
+        logging.basicConfig(level=level, handlers=[handler], force=True)
+        return
     logging.basicConfig(
         stream=sys.stderr,
-        level=os.environ.get("LOG_LEVEL", "INFO").upper(),
+        level=level,
         format="[pexels-mcp] %(levelname)s %(name)s: %(message)s",
         force=True,
     )
@@ -43,10 +81,9 @@ def main() -> None:
     callers send ``X-Pexels-Api-Key`` per request. If neither is provided the
     server still starts and tools surface an actionable error on call.
     """
-    _configure_logging()
-    logger = logging.getLogger("pexels_mcp_server")
-
     transport = _resolve_transport()
+    _configure_logging(_resolve_log_format(transport))
+    logger = logging.getLogger("pexels_mcp_server")
     env_key_present = bool(os.environ.get("PEXELS_API_KEY", "").strip())
     if transport == "stdio" and not env_key_present:
         logger.warning(
