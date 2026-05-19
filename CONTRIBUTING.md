@@ -34,7 +34,6 @@ src/pexels_mcp_server/
   schemas.py           Pydantic v2 input models (extra="forbid")
   formatters.py        Token-lean JSON projections + Markdown bullets
   previews.py          Thumbnail fetcher for the visual-pick tool
-  types.py             TypedDicts mirroring Pexels API payloads
   constants.py         BASE_URL, allowed hosts, pagination limits
 tests/
   test_client.py       HTTP layer (pytest-httpx)

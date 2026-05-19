@@ -141,9 +141,10 @@ mcp: FastMCP = FastMCP(
     transport_security=_build_transport_security(),
     # Streamable HTTP is run stateless: every request carries its own context,
     # no Mcp-Session-Id is allocated, the response is one JSON object instead
-    # of an SSE stream. This is the SDK-recommended posture for horizontally
-    # scaled hosted deployments (Koyeb, Fly, Cloud Run) and matches the
-    # direction of the MCP draft spec which is removing session IDs entirely.
+    # of an SSE stream. The MCP 2025-06-18 spec keeps Mcp-Session-Id as
+    # OPTIONAL; opting out of sessions is the SDK-recommended posture for
+    # horizontally scaled hosted deployments (Koyeb, Fly, Cloud Run) where
+    # any instance must be able to handle any request without sticky routing.
     stateless_http=True,
     json_response=True,
 )

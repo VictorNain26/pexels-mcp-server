@@ -4,6 +4,19 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ## [Unreleased]
 
+### Added
+- README "Koyeb deployment guide" section: step-by-step (dashboard + CLI), explicit env-var table, HTTP `/healthz` probe configuration, public-endpoint smoke test using `MCP-Protocol-Version: 2025-06-18`, and the claude.ai custom-connector wiring. Closes the gap where the previous Koyeb section only listed four bullet points.
+- `.env.example` now lists every variable `__main__.py` actually reads: `MCP_AUTH_TOKEN`, `MCP_ALLOWED_HOSTS`, `MCP_ALLOW_UNAUTHED`, `LOG_LEVEL`, `LOG_FORMAT`. Previous version omitted half of them.
+- `MCP_ALLOWED_HOSTS={{ KOYEB_PUBLIC_DOMAIN }}` is now recommended in the Koyeb env-var table. Re-enables the Origin/Host validation the MCP 2025-06-18 spec marks as `MUST` for Streamable HTTP servers, without breaking generic platform deployments where the hostname is unknown ahead of time.
+- `CLAUDE.md` (Claude Code repo guide) and `PRIVACY.md` added to `.dockerignore` so they never ship in the runtime image.
+
+### Changed
+- `uvicorn.timeout_graceful_shutdown` bumped from `8` to `25` seconds. Koyeb (and Fly) send `SIGTERM` and wait ~30 s before `SIGKILL`; the previous 8 s window was tight and risked dropping in-flight Pexels API calls during rolling deploys. 25 s leaves a 5 s buffer for uvicorn's own teardown.
+- Reworded the `stateless_http=True` rationale comment in `server.py`. The previous wording claimed the MCP draft was "removing session IDs entirely"; the published 2025-06-18 spec keeps `Mcp-Session-Id` as OPTIONAL. The comment now states accurately that opting out of sessions is the right posture for horizontally scaled deployments.
+
+### Removed
+- `src/pexels_mcp_server/types.py` (107 lines of `TypedDict` mirrors of the Pexels API). Zero imports across the codebase — confirmed by grepping every `PhotoDict|VideoDict|CollectionDict|RateLimitDict` reference. The types served as inline documentation only; the real shape of upstream payloads is enforced at the Pydantic input boundary and the lean JSON projections in `formatters.py`. Removing the file also drops the only direct use of `typing_extensions` (still pulled transitively via pydantic). Updated `CONTRIBUTING.md` project layout accordingly.
+
 ## [0.6.0] - 2026-05-19
 
 ### Added
