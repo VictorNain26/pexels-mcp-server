@@ -122,9 +122,11 @@ def _build_oauth_settings() -> (
     """Resolve OAuth wiring from the environment.
 
     The HTTP transport requires OAuth; stdio leaves it off (local clients
-    inject ``PEXELS_API_KEY`` directly). When the env vars are missing in
-    HTTP mode, ``__main__`` refuses to boot before we reach this point — so
-    here we either return the full triple or ``None``.
+    inject ``PEXELS_API_KEY`` directly). When HTTP mode is selected and the
+    env vars are missing we **fail closed**: raising at module import time
+    aborts any boot path that tries to run the server unauthenticated,
+    including alternate entrypoints like ``uvicorn pexels_mcp_server.server:mcp``
+    that bypass ``__main__`` (and therefore bypass ``_validate_http_env``).
     """
     transport = os.environ.get("TRANSPORT", "stdio").strip().lower()
     if transport != "streamable-http":
@@ -133,10 +135,20 @@ def _build_oauth_settings() -> (
     server_url = os.environ.get("MCP_SERVER_URL", "").strip()
     passcode = os.environ.get("MCP_AUTH_PASSCODE", "").strip()
     if not server_url or not passcode:
-        # __main__ enforces both vars in HTTP mode; this is a defensive guard
-        # for tests / library use where someone instantiates the server
-        # directly.
-        return None
+        missing = [
+            name
+            for name, value in (
+                ("MCP_SERVER_URL", server_url),
+                ("MCP_AUTH_PASSCODE", passcode),
+            )
+            if not value
+        ]
+        raise RuntimeError(
+            "TRANSPORT=streamable-http requires "
+            + ", ".join(missing)
+            + ". Set them in the environment or switch to TRANSPORT=stdio "
+            "for unauthenticated local use."
+        )
 
     provider = PexelsOAuthProvider(server_url=server_url, passcode=passcode)
     server_url_obj = AnyHttpUrl(server_url)

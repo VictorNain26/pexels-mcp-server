@@ -36,6 +36,7 @@ import logging
 import secrets
 import time
 from html import escape
+from urllib.parse import urlencode
 
 from mcp.server.auth.provider import (
     AccessToken,
@@ -61,6 +62,12 @@ _AUTHORIZATION_CODE_TTL_SECONDS = 300
 # expires, so a short window limits exposure if a token leaks while the user
 # has the conversation open.
 _ACCESS_TOKEN_TTL_SECONDS = 3600
+
+# How long an /authorize state entry stays in memory before it is reaped.
+# Same window as the authorization code: enough for the user to type the
+# passcode on /login, short enough that abandoned logins and brute-force
+# attempts cannot grow the state map unboundedly.
+_STATE_TTL_SECONDS = 300
 
 # Scope advertised to clients via /.well-known/oauth-authorization-server.
 # A single coarse scope is enough for a read-only server.
@@ -91,8 +98,22 @@ class PexelsOAuthProvider(
         self._clients: dict[str, OAuthClientInformationFull] = {}
         self._auth_codes: dict[str, AuthorizationCode] = {}
         self._tokens: dict[str, AccessToken] = {}
-        # state -> {redirect_uri, code_challenge, ..., client_id, resource}
+        # state -> {redirect_uri, code_challenge, ..., client_id, resource,
+        #           "_created_at": "<float seconds since epoch>"}.
+        # Entries are reaped after ``_STATE_TTL_SECONDS`` so abandoned logins
+        # and wrong-passcode attempts cannot grow the map unboundedly.
         self._state_mapping: dict[str, dict[str, str | None]] = {}
+
+    def _prune_expired_state(self) -> None:
+        """Drop ``_state_mapping`` entries older than the TTL."""
+        cutoff = time.time() - _STATE_TTL_SECONDS
+        expired = [
+            state
+            for state, data in self._state_mapping.items()
+            if float(data.get("_created_at") or "0") < cutoff
+        ]
+        for state in expired:
+            del self._state_mapping[state]
 
     # ------------------------------------------------------------------ DCR
 
@@ -118,6 +139,7 @@ class PexelsOAuthProvider(
         passcode there, ``handle_login_callback`` issues the authorization
         code and 302s back to ``params.redirect_uri``.
         """
+        self._prune_expired_state()
         state = params.state or secrets.token_hex(16)
         self._state_mapping[state] = {
             "redirect_uri": str(params.redirect_uri),
@@ -127,13 +149,21 @@ class PexelsOAuthProvider(
             # RFC 8707 — carry the resource indicator end-to-end so the issued
             # access token is audience-bound to this MCP server.
             "resource": params.resource,
+            "_created_at": str(time.time()),
         }
-        return f"{self._server_url}/login?state={state}&client_id={client.client_id}"
+        # ``state`` is opaque client input that may legally contain reserved
+        # characters (``+``, ``=``, ``&``, ``#``); urlencode round-trips them
+        # so the value survives the GET to /login without corrupting the
+        # query string. Same for ``client_id`` (it is a server-issued token,
+        # but the same rule applies).
+        query = urlencode({"state": state, "client_id": client.client_id})
+        return f"{self._server_url}/login?{query}"
 
     # ------------------------------------------------------------ /login UI
 
     async def render_login_page(self, request: Request) -> Response:
         """GET /login — minimal HTML form asking for the shared passcode."""
+        self._prune_expired_state()
         state = request.query_params.get("state")
         if not state or state not in self._state_mapping:
             raise HTTPException(400, "Invalid or expired state parameter")
@@ -223,6 +253,7 @@ class PexelsOAuthProvider(
         return RedirectResponse(url=redirect_uri, status_code=302)
 
     def _validate_and_issue_code(self, *, passcode: str, state: str) -> str:
+        self._prune_expired_state()
         state_data = self._state_mapping.get(state)
         if not state_data:
             raise HTTPException(400, "Invalid or expired state")

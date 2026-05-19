@@ -227,7 +227,7 @@ Switch to `response_format="markdown"` if you want a one-line human summary inst
 
 The agent picks the right shot in one tool call by filtering aggressively up front.
 
-```
+```python
 pexels_search_photos(
   query="modern open-plan office workspace",
   orientation="landscape",
@@ -243,7 +243,7 @@ The response is a JSON envelope with up to 6 photos. The agent reads each `alt` 
 
 When the user asks for a 10-15 second loop in 4K, filtering on `min_duration`, `max_duration` and `size` avoids scanning hundreds of candidates.
 
-```
+```python
 pexels_search_videos(
   query="aerial drone shot of mountain lake at dawn",
   orientation="landscape",
@@ -258,7 +258,7 @@ Then, since the search tool already trims to the top 3 files by resolution, the 
 
 When the user wants to pick from their own saved Pexels collections (folders they curate on pexels.com), the agent calls the my-collections tool first, then drills into the chosen one.
 
-```
+```python
 collections = pexels_get_my_collections(per_page=10)
 # pick one based on title/description, then:
 items = pexels_get_collection_media(collection_id="<id from above>", per_page=20)

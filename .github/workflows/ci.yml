@@ -88,16 +88,19 @@ jobs:
           grep -q "MCP_AUTH_PASSCODE" /tmp/refuse.log
 
           # HTTP mode with the OAuth env vars set must boot and write the
-          # startup line. We don't care if it later fails to bind on a
-          # second start; the log assertion is enough.
-          docker run --rm -d --name smoke \
+          # startup line. The container is NOT started with --rm so that
+          # `docker logs` keeps working even if the process exits before
+          # our assertion runs — otherwise a fast crash deletes the logs
+          # we need to diagnose the failure.
+          docker run -d --name smoke \
             -e TRANSPORT=streamable-http \
             -e HOST=0.0.0.0 \
             -e PORT=8000 \
             -e MCP_SERVER_URL=http://127.0.0.1:8000 \
             -e MCP_AUTH_PASSCODE=ci-smoke-passcode \
             pexels-mcp-server:ci
-          sleep 3
-          docker logs smoke 2>&1 | tee /tmp/boot.log
-          docker kill smoke || true
+          sleep 5
+          docker ps -a --filter name=smoke --format '{{.Status}}'
+          docker logs smoke 2>&1 | tee /tmp/boot.log || true
+          docker rm -f smoke || true
           grep -q "Starting pexels-mcp-server on streamable-http" /tmp/boot.log
