@@ -1,23 +1,23 @@
 # PyPI publish workflow.
 #
-# Disabled until the PyPI project is created manually and Trusted Publishing is
-# configured at https://pypi.org/manage/account/publishing/.
+# Fires on a semver tag pushed to the repository (`vX.Y.Z`). The publish job
+# only runs after the test/lint/typecheck matrix passes on the tagged commit
+# and after a reviewer approves the `pypi` deployment environment in GitHub
+# Settings. Manual dispatch is also allowed for emergency releases but goes
+# through the same gates.
 #
-# To enable:
+# Setup checklist (one-time, done outside Git):
 #   1. Create the `pexels-mcp` project on PyPI.
-#   2. Add a Trusted Publisher entry for this repo (owner, repo name,
-#      workflow filename = publish.yml, environment = pypi).
-#   3. Uncomment the `on:` block below.
-#   4. Tag a release: `git tag v0.1.0 && git push --tags`.
+#   2. Add a Trusted Publisher entry for this repo + this workflow filename.
+#   3. Create a GitHub deployment environment named `pypi` with required
+#      reviewers.
 
 name: Publish to PyPI
 
-# on:
-#   push:
-#     tags:
-#       - "v*"
-
 on:
+  push:
+    tags:
+      - "v*"
   workflow_dispatch:
 
 permissions:
@@ -25,7 +25,11 @@ permissions:
   id-token: write
 
 jobs:
+  test:
+    uses: ./.github/workflows/ci.yml
+
   build:
+    needs: test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
