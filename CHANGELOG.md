@@ -4,6 +4,11 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-05-19
+
+### Added
+- `.github/workflows/dependabot-auto-merge.yml`. Auto-merges Dependabot PRs that match the low-risk matrix (any patch update, minor dev-deps, minor GitHub Actions). Runtime-minor and major bumps still wait for a human review with an explanatory comment posted by the workflow. Repo-level `Allow auto-merge` is enabled.
+
 ## [0.4.0] - 2026-05-19
 
 ### Added
@@ -69,7 +74,8 @@ All notable changes to this project are documented here. Format follows [Keep a 
 - Stdio and Streamable HTTP transports.
 - CI matrix on Python 3.10, 3.11, 3.12.
 
-[Unreleased]: https://github.com/VictorNain26/pexels-mcp-server/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/VictorNain26/pexels-mcp-server/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/VictorNain26/pexels-mcp-server/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/VictorNain26/pexels-mcp-server/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/VictorNain26/pexels-mcp-server/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/VictorNain26/pexels-mcp-server/compare/v0.1.0...v0.2.0

@@ -1,0 +1,72 @@
+# Auto-merge selected Dependabot PRs once CI is green.
+#
+# Matrix:
+#   - Patch updates (any ecosystem, any dep type)  -> auto-merge
+#   - Minor updates of dev deps (direct:development) -> auto-merge
+#   - Minor updates of GitHub Actions               -> auto-merge
+#   - Minor updates of runtime deps (direct:production) -> manual review
+#   - Major updates (any ecosystem)                 -> manual review
+#
+# Rationale: patch + dev-minor are low-risk and noisy if reviewed by hand.
+# Runtime minor bumps can change httpx/pydantic/mcp behavior subtly and
+# warrant a human glance. Major bumps always need a human regardless.
+#
+# Prerequisites (one-time, outside Git):
+#   1. Settings -> General -> "Allow auto-merge" must be ENABLED (done via
+#      `gh api repos/<repo> -X PATCH -F allow_auto_merge=true`).
+#   2. Settings -> Branches -> branch protection on `main` should require
+#      the CI status checks so the auto-merge waits for them to pass before
+#      merging.
+
+name: Dependabot auto-merge
+
+on:
+  pull_request:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  auto-merge:
+    # Skip everything for non-Dependabot PRs; this job exists only for the
+    # bot. The `if` at the job level means the workflow run still shows up
+    # in the Actions tab on every PR but does no work for humans.
+    if: github.actor == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch Dependabot metadata
+        id: meta
+        uses: dependabot/fetch-metadata@v2
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Approve and enable auto-merge for eligible updates
+        # Auto-merge eligibility:
+        #   - any patch update
+        #   - minor update for dev deps
+        #   - minor update for github-actions (also "indirect:..." dep type)
+        if: |
+          steps.meta.outputs.update-type == 'version-update:semver-patch' ||
+          (steps.meta.outputs.update-type == 'version-update:semver-minor' &&
+           steps.meta.outputs.dependency-type == 'direct:development') ||
+          (steps.meta.outputs.package-ecosystem == 'github_actions' &&
+           steps.meta.outputs.update-type == 'version-update:semver-minor')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: |
+          gh pr review --approve "$PR_URL" --body "Auto-approved by policy: ${{ steps.meta.outputs.update-type }} on ${{ steps.meta.outputs.dependency-type || steps.meta.outputs.package-ecosystem }}."
+          gh pr merge --auto --squash "$PR_URL"
+
+      - name: Annotate PRs left for manual review
+        if: |
+          steps.meta.outputs.update-type == 'version-update:semver-major' ||
+          (steps.meta.outputs.update-type == 'version-update:semver-minor' &&
+           steps.meta.outputs.dependency-type == 'direct:production' &&
+           steps.meta.outputs.package-ecosystem != 'github_actions')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: |
+          gh pr comment "$PR_URL" --body "🔍 Manual review required: ${{ steps.meta.outputs.update-type }} update for ${{ steps.meta.outputs.dependency-name }} (${{ steps.meta.outputs.dependency-type }}). See \`.github/workflows/dependabot-auto-merge.yml\` for the policy."
