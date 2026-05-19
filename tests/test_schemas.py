@@ -136,3 +136,42 @@ def test_include_previews_can_be_disabled() -> None:
     """Bulk operations and token-sensitive workloads can opt out."""
     params = SearchPhotosParams(query="x", include_previews=False)
     assert params.include_previews is False
+
+
+# --- null coercion (defensive against MCP clients that serialize defaults
+# as `null` instead of omitting the key) ----------------------------------
+
+
+def test_response_format_null_is_coerced_to_default() -> None:
+    """claude.ai web ships ``response_format: null`` in the wild on every
+    tool call. The strict enum used to reject; now it normalizes to the
+    field default (``json``) so the call succeeds."""
+    params = SearchPhotosParams(query="x", response_format=None)  # type: ignore[arg-type]
+    assert params.response_format == ResponseFormat.JSON
+
+
+def test_include_previews_null_is_coerced_to_default() -> None:
+    params = SearchPhotosParams(query="x", include_previews=None)  # type: ignore[arg-type]
+    assert params.include_previews is True
+
+
+def test_page_null_is_coerced_to_default() -> None:
+    """Same defensive pattern on ``page`` — defaulting integer fields fail
+    strict validation on null too."""
+    params = SearchPhotosParams(query="x", page=None, per_page=None)  # type: ignore[arg-type]
+    assert params.page == 1
+    assert params.per_page == 15
+
+
+def test_orientation_null_remains_none() -> None:
+    """``orientation: Orientation | None = None`` keeps its semantics: null
+    means 'no orientation filter', not 'use a default orientation'."""
+    params = SearchPhotosParams(query="x", orientation=None)
+    assert params.orientation is None
+
+
+def test_required_field_null_still_fails() -> None:
+    """The null-coercion must not paper over missing required fields. A
+    ``query=null`` on SearchPhotosParams is a real error."""
+    with pytest.raises(ValidationError):
+        SearchPhotosParams(query=None)  # type: ignore[arg-type]
