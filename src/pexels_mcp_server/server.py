@@ -424,6 +424,51 @@ _READ_ONLY_ANNOTATIONS = ToolAnnotations(
     openWorldHint=True,
 )
 
+# --- MCP Apps UI resource for inline rendering ---------------------------
+#
+# Tools that return search/list results carry ``_meta.ui.resourceUri`` so
+# MCP Apps-aware hosts (claude.ai web/desktop, Claude Code, VS Code GH
+# Copilot, Goose, Postman, MCPJam) fetch the referenced UI resource,
+# render it in a sandboxed iframe inside the conversation, and stream the
+# tool result into the view via ``ui/notifications/tool-result``.
+#
+# Spec: https://modelcontextprotocol.io/extensions/apps/overview
+# (stable revision 2026-01-26). Wire protocol summary:
+#   1. iframe sends ``ui/initialize`` request, awaits response
+#   2. iframe sends ``ui/notifications/initialized`` notification
+#   3. host pushes ``ui/notifications/tool-result`` with the
+#      ``CallToolResult`` whenever the linked tool completes
+#   4. iframe parses the result and renders the photo/video grid
+#
+# The HTML lives in ``templates/results_grid.html`` (XSS-safe DOM, no
+# innerHTML). Served via the standard ``@mcp.resource`` decorator with
+# the MCP Apps MIME type ``text/html;profile=mcp-app``.
+_UI_RESULTS_GRID_URI = "ui://pexels/results"
+_UI_RESULTS_META: dict[str, Any] = {"ui": {"resourceUri": _UI_RESULTS_GRID_URI}}
+
+
+from importlib.resources import files as _ui_files  # noqa: E402
+
+_UI_RESULTS_HTML = (_ui_files("pexels_mcp_server") / "templates" / "results_grid.html").read_text(
+    encoding="utf-8"
+)
+
+
+@mcp.resource(
+    _UI_RESULTS_GRID_URI,
+    name="pexels-results-grid",
+    title="Pexels search results — interactive grid",
+    description=(
+        "Inline UI that renders Pexels search/list tool results as a "
+        "responsive thumbnail grid. Connected to every search/list tool "
+        "via _meta.ui.resourceUri so MCP Apps-aware hosts render it "
+        "automatically in the conversation."
+    ),
+    mime_type="text/html;profile=mcp-app",
+)
+def _pexels_results_grid_resource() -> str:
+    return _UI_RESULTS_HTML
+
 
 def _client(ctx: Context) -> PexelsClient:  # type: ignore[type-arg]
     """Pull the lifespan-scoped Pexels client out of the request context."""
@@ -542,6 +587,7 @@ def _apply_post_hoc_filters(
         idempotentHint=True,
         openWorldHint=True,
     ),
+    meta=_UI_RESULTS_META,
 )
 async def pexels_search_photos(
     ctx: Context,  # type: ignore[type-arg]
@@ -644,6 +690,7 @@ async def pexels_search_photos(
     name="pexels_curated_photos",
     title="Browse Curated Pexels Photos",
     annotations=_READ_ONLY_ANNOTATIONS,
+    meta=_UI_RESULTS_META,
 )
 async def pexels_curated_photos(
     ctx: Context,  # type: ignore[type-arg]
@@ -700,6 +747,7 @@ async def pexels_curated_photos(
     name="pexels_get_photo",
     title="Get a Pexels Photo by ID",
     annotations=_READ_ONLY_ANNOTATIONS,
+    meta=_UI_RESULTS_META,
 )
 async def pexels_get_photo(
     ctx: Context,  # type: ignore[type-arg]
@@ -741,6 +789,7 @@ async def pexels_get_photo(
     name="pexels_search_videos",
     title="Search Pexels Videos",
     annotations=_READ_ONLY_ANNOTATIONS,
+    meta=_UI_RESULTS_META,
 )
 async def pexels_search_videos(
     ctx: Context,  # type: ignore[type-arg]
@@ -829,6 +878,7 @@ async def pexels_search_videos(
     name="pexels_popular_videos",
     title="Browse Popular Pexels Videos",
     annotations=_READ_ONLY_ANNOTATIONS,
+    meta=_UI_RESULTS_META,
 )
 async def pexels_popular_videos(
     ctx: Context,  # type: ignore[type-arg]
@@ -894,6 +944,7 @@ async def pexels_popular_videos(
     name="pexels_get_video",
     title="Get a Pexels Video by ID",
     annotations=_READ_ONLY_ANNOTATIONS,
+    meta=_UI_RESULTS_META,
 )
 async def pexels_get_video(
     ctx: Context,  # type: ignore[type-arg]
@@ -972,6 +1023,7 @@ async def pexels_list_featured_collections(
     name="pexels_get_collection_media",
     title="Get Pexels Collection Contents",
     annotations=_READ_ONLY_ANNOTATIONS,
+    meta=_UI_RESULTS_META,
 )
 async def pexels_get_collection_media(
     ctx: Context,  # type: ignore[type-arg]

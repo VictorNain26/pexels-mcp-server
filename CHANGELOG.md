@@ -4,6 +4,11 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ## [Unreleased]
 
+### Added (MCP Apps inline rendering — 2026-05-19)
+- **MCP Apps support** per the official Jan 2026 specification (stable revision `2026-01-26`). Every search/list tool (`pexels_search_photos`, `pexels_curated_photos`, `pexels_get_photo`, `pexels_search_videos`, `pexels_popular_videos`, `pexels_get_video`, `pexels_get_collection_media`) carries `_meta.ui.resourceUri = "ui://pexels/results"`. MCP Apps-aware hosts (claude.ai web, Claude Desktop, Claude Code, Goose, VS Code GitHub Copilot, Postman, MCPJam) preload the linked UI resource and render it as a sandboxed iframe inline in the conversation when a search/list tool returns — the photos are visible to the user, not just to the model.
+- New MCP resource `ui://pexels/results` (MIME `text/html;profile=mcp-app`) serving `src/pexels_mcp_server/templates/results_grid.html`. The bundle implements the full MCP Apps wire protocol: `ui/initialize` request, `ui/notifications/initialized`, listens for `ui/notifications/tool-result`, parses the embedded JSON envelope, renders a responsive thumbnail grid, and reports back via `ui/notifications/size-changed`. Handles photos, videos, and collection media (mixed). DOM-only construction (no `innerHTML`) — XSS-safe against attacker-controlled fields in Pexels payloads.
+- 3 new tests in `tests/test_server_http.py` covering (1) the UI resource is registered with the correct MIME type, (2) every search/list tool declares `_meta.ui.resourceUri`, (3) the served HTML contains the spec-mandated handshake methods and never uses `innerHTML`.
+
 ### Added (marketing filters + tool discovery — 2026-05-19)
 - **`aspect_ratio`** filter on every search/list tool. Accepts `"W:H"` (e.g. `"16:9"`, `"1:1"`, `"9:16"`, `"4:5"`, `"21:9"`) or a positive decimal with explicit dot (`"1.5"`). Matched within `aspect_ratio_tolerance` (default 5 %, configurable 0–50 %). The most-requested marketing filter — Pexels' REST API does not natively expose it.
 - **`min_width`** / **`min_height`** filters (post-hoc) on every search/list tool. Pexels' native `size` enum is loose (large/medium/small); the explicit pixel floor is what marketing actually needs (~4000 px for A4 print at 300 DPI, ~1920 px for hero banners, etc.).
