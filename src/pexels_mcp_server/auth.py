@@ -70,10 +70,16 @@ logger = logging.getLogger("pexels_mcp_server.auth")
 # (and OAuth 2.1) recommend short-lived codes; 5 min matches the SDK example.
 _AUTHORIZATION_CODE_TTL_SECONDS = 300
 
-# Access-token lifetime. Clients re-auth transparently when the token expires,
-# so a short window limits exposure if a token leaks while the user has the
-# conversation open.
-_ACCESS_TOKEN_TTL_SECONDS = 3600
+# Access-token lifetime. The bound Pexels key is dropped when the token
+# expires, so the user has to re-walk /setup. 30 days is the right floor
+# for UX: shorter (e.g. 1 h) means re-pasting the key inside a long
+# conversation; longer than that gives no real benefit because the
+# in-memory token store is wiped on every Koyeb restart (which happens on
+# every deploy and weekly on Dependabot updates anyway), so the effective
+# TTL is min(TTL, time-until-restart). Pexels keys are low-value secrets
+# (free tier, user-regenerable, no financial / PII access), so the longer
+# leak-exposure window of a 30-day token is acceptable for this server.
+_ACCESS_TOKEN_TTL_SECONDS = 30 * 24 * 3600
 
 # How long a /setup session stays valid. 15 minutes is generous for a
 # human pasting their Pexels key into the form; longer windows just bloat

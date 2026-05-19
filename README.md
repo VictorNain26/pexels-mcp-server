@@ -161,7 +161,7 @@ The `WWW-Authenticate` header on the unauthenticated `/mcp` call is what makes c
 | **Claude Code** | `claude mcp add pexels --transport http https://<host>/mcp`. The CLI opens the browser at `/setup` on first call so you can paste your key. |
 | **MCP Inspector** | `npx @modelcontextprotocol/inspector` → paste the URL → it discovers OAuth automatically and opens `/setup` in the browser. |
 
-If a token expires (default 1 h), the client re-runs the flow transparently and you'll be asked for the key again. Each caller's key lives only in this server's memory and is dropped when the token expires (or the process restarts). Power-user setups that prefer to inject the key per call can skip `/setup` and send `X-Pexels-Api-Key` as a header on every request instead — the server falls back to that header when no key is bound to the access token.
+Tokens are valid for 30 days; the client re-runs the OAuth handshake transparently when they expire and you'll be asked for the key again at that point. The bound key also disappears on every server restart (Koyeb rolling deploys, dependency updates) since the store is in-memory only — expect one re-`/setup` per deploy. Power-user setups that prefer to inject the key per call can skip `/setup` and send `X-Pexels-Api-Key` as a header on every request instead — the server falls back to that header when no key is bound to the access token.
 
 ## Local development
 
