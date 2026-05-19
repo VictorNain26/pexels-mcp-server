@@ -38,15 +38,19 @@ When the agent commits to a pick, it returns the `image_url` (full resolution) p
 
 The server is meant to run as **one hosted HTTPS endpoint** with OAuth 2.1 + RFC 9728 enabled. That is the only supported topology — it works for every MCP HTTP client out there (claude.ai web custom connectors, Claude Desktop remote connectors, Claude Code, the MCP Inspector, future clients). Stdio is still functional and useful for power users who want a local-only setup; see [Local development](#local-development).
 
-### Architecture in one paragraph
+### Auth model in one paragraph — and what makes this a *public* MCP
 
-The Python process plays both roles defined by the MCP authorization spec: it is the **Resource Server** that holds the nine Pexels tools at `/mcp`, and the **Authorization Server** that issues short-lived Bearer tokens. The MCP Python SDK mounts the well-known metadata endpoints (`/.well-known/oauth-protected-resource` per RFC 9728, `/.well-known/oauth-authorization-server` per RFC 8414) and the OAuth routes (`/authorize`, `/token`, `/register`) automatically. The only custom touch is a minimal `/login` HTML page where the human user types a shared passcode — the OAuth flow then proceeds end-to-end.
+The Python process plays both roles defined by the MCP authorization spec: it is the **Resource Server** that holds the nine Pexels tools at `/mcp`, and the **Authorization Server** that issues short-lived Bearer tokens. The MCP Python SDK mounts every well-known endpoint automatically: `/.well-known/oauth-protected-resource` (RFC 9728), `/.well-known/oauth-authorization-server` (RFC 8414), `/authorize`, `/token`, `/register` (RFC 7591 DCR), all with PKCE.
+
+The OAuth flow is **auto-approved**: there is no human consent step, no passcode, no login page. Any MCP client that walks the standard handshake receives a Bearer token. That token is *not* a user identity — it only proves the client navigated the spec-compliant flow that claude.ai (and every other MCP HTTP client) requires before making tool calls.
+
+The **real** authentication of every tool call is the caller's own `X-Pexels-Api-Key` header. The server forwards it to `api.pexels.com` and never stores it, so each caller pays their own Pexels quota and the server cannot be abused to consume someone else's quota.
 
 ### Per-call headers (what each MCP client sends)
 
 | Header | When | Purpose |
 |---|---|---|
-| `Authorization: Bearer <access-token>` | always after the OAuth flow finishes | Validates the token against the in-memory store. The token is issued by `/token` after a successful passcode login; the client refreshes it on expiry by re-running `/authorize`. |
+| `Authorization: Bearer <access-token>` | always after the OAuth handshake finishes | Validates the token against the in-memory store. The token is issued by `/token` and refreshed transparently by the client on expiry. |
 | `X-Pexels-Api-Key: <user_key>` | required on every tool call | The caller's own Pexels key, used to authenticate the upstream Pexels REST calls. Not stored, not logged. Get one at <https://www.pexels.com/api/>. |
 | `MCP-Protocol-Version: 2025-06-18` | required by the spec after `initialize` | Tells the server which protocol revision the client speaks. |
 
@@ -56,7 +60,6 @@ The Python process plays both roles defined by the MCP authorization spec: it is
 |---|---|---|
 | `TRANSPORT` | yes | Set to `streamable-http`. |
 | `MCP_SERVER_URL` | yes | Public HTTPS URL of this service, no trailing slash (e.g. `https://pexels-mcp.example.com`). Used as both the OAuth `issuer_url` and the RFC 9728 `resource_server_url`. **Must match the host the client sees.** |
-| `MCP_AUTH_PASSCODE` | yes | Shared secret the user types on the `/login` page during the OAuth flow. Generate with `openssl rand -hex 16`. Distribute out of band. |
 | `MCP_ALLOWED_HOSTS` | no | Comma-separated allowlist for the `Host` header (DNS rebinding protection per MCP spec 2025-06-18). Supports the `host:*` wildcard. Unset = accept any Host. |
 | `HOST` | no | Default `127.0.0.1`; the Docker image flips it to `0.0.0.0`. |
 | `PORT` | no | Default `8000`. Platforms like Koyeb / Fly inject this automatically. |
@@ -72,15 +75,7 @@ Both `GET /healthz` (liveness) and `GET /readyz` (readiness) return `200 ok` and
 
 The repo ships a multi-stage `Dockerfile` (Python 3.12 slim, runs as the `app` user, ~80 MB image, `HEALTHCHECK` on `/healthz`, graceful shutdown with a 25 s window — well under Koyeb's 30 s SIGTERM grace period).
 
-#### 1. Generate the passcode
-
-```bash
-openssl rand -hex 16
-```
-
-Save it. You'll set it as `MCP_AUTH_PASSCODE` on Koyeb and type it on the `/login` page the first time you connect any MCP client.
-
-#### 2. Create the Koyeb service
+#### 1. Create the Koyeb service
 
 Dashboard route (fastest):
 
@@ -96,7 +91,6 @@ Dashboard route (fastest):
    |---|---|---|
    | `TRANSPORT` | `streamable-http` | Required. |
    | `MCP_SERVER_URL` | `https://{{ KOYEB_PUBLIC_DOMAIN }}` | Koyeb interpolates this at deploy time; the URL must end up matching what clients hit. |
-   | `MCP_AUTH_PASSCODE` | `<paste the openssl output>` | Mark as **Secret**. |
    | `MCP_ALLOWED_HOSTS` | `{{ KOYEB_PUBLIC_DOMAIN }}` | Origin/Host validation per spec. |
    | `LOG_FORMAT` | `json` | One-line-per-record for the Koyeb log drain. |
    | `LOG_LEVEL` | `INFO` | Bump to `DEBUG` only while diagnosing. |
@@ -108,8 +102,6 @@ Dashboard route (fastest):
 CLI route (reproducible, scriptable):
 
 ```bash
-koyeb secret create mcp-auth-passcode --value <hex from openssl>
-
 koyeb service create pexels-mcp \
   --app pexels-mcp \
   --git github.com/VictorNain26/pexels-mcp-server \
@@ -122,12 +114,11 @@ koyeb service create pexels-mcp \
   --env "MCP_SERVER_URL=https://{{ KOYEB_PUBLIC_DOMAIN }}" \
   --env "MCP_ALLOWED_HOSTS={{ KOYEB_PUBLIC_DOMAIN }}" \
   --env LOG_FORMAT=json \
-  --env "MCP_AUTH_PASSCODE=@mcp-auth-passcode" \
   --instance-type nano \
   --regions fra
 ```
 
-#### 3. Smoke test the public endpoint
+#### 2. Smoke test the public endpoint
 
 ```bash
 URL=https://<your-service>.koyeb.app
@@ -151,16 +142,16 @@ curl -i -X POST "$URL/mcp" \
 
 The `WWW-Authenticate` header on the unauthenticated `/mcp` call is what makes claude.ai pivot into the OAuth flow.
 
-#### 4. Connect any MCP client
+#### 3. Connect any MCP client (no secret to type)
 
 | Client | Steps |
 |---|---|
-| **claude.ai web** | Settings → Connectors → Add custom connector → URL `https://<host>/mcp`. Click *Connect* → browser pops the `/login` page → enter the passcode → tokens exchanged automatically. Then add `X-Pexels-Api-Key: <your key>` under Advanced custom headers. |
-| **Claude Desktop** | Settings → Connectors → Add (remote) → same URL and passcode flow. Custom headers tab takes `X-Pexels-Api-Key`. |
-| **Claude Code** | `claude mcp add pexels --transport http https://<host>/mcp --header "X-Pexels-Api-Key: <key>"`. The CLI walks you through the OAuth login. |
+| **claude.ai web** | Settings → Connectors → Add custom connector → URL `https://<host>/mcp`. Click *Connect* — the OAuth handshake completes automatically (browser flashes briefly and closes). Then add `X-Pexels-Api-Key: <your key>` under Advanced custom headers. |
+| **Claude Desktop** | Settings → Connectors → Add (remote) → same URL. Custom headers tab takes `X-Pexels-Api-Key`. |
+| **Claude Code** | `claude mcp add pexels --transport http https://<host>/mcp --header "X-Pexels-Api-Key: <key>"`. The CLI handles OAuth on first call. |
 | **MCP Inspector** | `npx @modelcontextprotocol/inspector` → paste the URL → it discovers OAuth automatically. |
 
-If a token expires (default 1 h), the client re-runs the flow transparently.
+If a token expires (default 1 h), the client re-runs the flow transparently. Each caller must provide their own `X-Pexels-Api-Key` — the server forwards it to Pexels and never stores it, so each user pays their own Pexels quota.
 
 ## Local development
 
@@ -176,11 +167,10 @@ uv sync --all-extras
 TRANSPORT=streamable-http \
 HOST=127.0.0.1 PORT=8000 \
 MCP_SERVER_URL=http://127.0.0.1:8000 \
-MCP_AUTH_PASSCODE=devpass \
   uv run pexels-mcp-server
 ```
 
-Then point any client at `http://127.0.0.1:8000/mcp`. The `/login` page accepts `devpass`. The MCP Inspector is the fastest way to exercise the 9 tools without going through claude.ai.
+Then point any client at `http://127.0.0.1:8000/mcp`. The MCP Inspector is the fastest way to exercise the 9 tools without going through claude.ai — the OAuth handshake completes silently and you can immediately call tools (after setting `X-Pexels-Api-Key` in the Inspector headers tab).
 
 ### Stdio (Cursor and other clients that don't speak MCP HTTP)
 

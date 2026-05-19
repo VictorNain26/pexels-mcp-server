@@ -76,26 +76,20 @@ def _resolve_transport() -> Transport:
 
 
 def _validate_http_env() -> None:
-    """Refuse to boot HTTP mode without the OAuth configuration.
+    """Refuse to boot HTTP mode without ``MCP_SERVER_URL``.
 
-    The hosted transport requires both a publicly reachable URL (so the
-    OAuth metadata documents point at the right host) and a passcode (so
-    the ``/login`` form has something to validate against). Either being
-    unset is a configuration error, not a runtime fallback.
+    The hosted transport needs a publicly reachable URL so the RFC 9728
+    Protected Resource Metadata and RFC 8414 Authorization Server Metadata
+    point at the right host. There is no human-in-the-loop secret to gate
+    the flow — authorization is auto-approved and the real authentication
+    of every tool call is the caller's own ``X-Pexels-Api-Key`` header.
     """
-    missing = [
-        name
-        for name in ("MCP_SERVER_URL", "MCP_AUTH_PASSCODE")
-        if not os.environ.get(name, "").strip()
-    ]
-    if missing:
+    if not os.environ.get("MCP_SERVER_URL", "").strip():
         sys.stderr.write(
-            "[pexels-mcp] ERROR Missing required env vars in streamable-http mode: "
-            f"{', '.join(missing)}. "
-            "MCP_SERVER_URL must be the public HTTPS URL of this service "
-            "(e.g. https://pexels-mcp.example.com); MCP_AUTH_PASSCODE is the "
-            "shared secret users type on the /login page. Generate with "
-            "`openssl rand -hex 16`.\n"
+            "[pexels-mcp] ERROR Missing required env var in streamable-http mode: "
+            "MCP_SERVER_URL. Set it to the public HTTPS URL of this service "
+            "(e.g. https://pexels-mcp.example.com). It is used as the OAuth "
+            "issuer_url and the RFC 9728 resource_server_url.\n"
         )
         sys.exit(2)
 

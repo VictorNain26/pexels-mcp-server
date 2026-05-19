@@ -29,7 +29,6 @@ Run the server locally in HTTP mode (parity with prod):
 TRANSPORT=streamable-http \
 HOST=127.0.0.1 PORT=8000 \
 MCP_SERVER_URL=http://127.0.0.1:8000 \
-MCP_AUTH_PASSCODE=devpass \
   uv run pexels-mcp-server
 ```
 
@@ -48,9 +47,9 @@ Six layers, each with one job. Helpers are mounted as Starlette/ASGI middleware 
 ```text
 __main__.py     transport selection, stderr logging, OAuth env validation, HTTP middleware wiring
    ↓
-server.py       FastMCP server + 9 @mcp.tool functions; OAuth wiring (auth_server_provider, token_verifier, AuthSettings)
+server.py       FastMCP server + 9 @mcp.tool functions; OAuth wiring (auth_server_provider, AuthSettings)
    ↓
-auth.py         PexelsOAuthProvider (in-memory AS), /login page, passcode validation
+auth.py         PexelsOAuthProvider (in-memory AS, auto-approve, no consent page)
    ↓
 schemas.py      Pydantic v2 input models (extra="forbid", host allowlist, locale allowlist)
    ↓
@@ -64,11 +63,12 @@ transport.py    healthz_middleware (/healthz, /readyz) and pexels_key_middleware
 
 ### OAuth wiring (HTTP mode)
 
-The `FastMCP` constructor gets three things in HTTP mode and **nothing OAuth-related** in stdio:
+The `FastMCP` constructor gets exactly two OAuth-related kwargs in HTTP mode (and **nothing OAuth-related** in stdio):
 
-- `auth_server_provider=PexelsOAuthProvider(...)` — implements the SDK's `OAuthAuthorizationServerProvider` protocol (in-memory clients/codes/tokens).
-- `token_verifier=ProviderTokenVerifier(provider)` — SDK helper that delegates to `provider.load_access_token`.
+- `auth_server_provider=PexelsOAuthProvider(server_url=...)` — implements the SDK's `OAuthAuthorizationServerProvider` protocol (in-memory clients/codes/tokens).
 - `auth=AuthSettings(issuer_url=MCP_SERVER_URL, resource_server_url=MCP_SERVER_URL, required_scopes=["mcp"], client_registration_options=ClientRegistrationOptions(enabled=True, ...))`.
+
+The SDK derives the token verifier itself via `ProviderTokenVerifier(auth_server_provider)`; passing `token_verifier=` explicitly alongside `auth_server_provider` is a `ValueError` per the SDK contract.
 
 `FastMCP.streamable_http_app()` then mounts automatically:
 
@@ -77,23 +77,20 @@ The `FastMCP` constructor gets three things in HTTP mode and **nothing OAuth-rel
 - `/authorize`, `/token`, `/register` (RFC 7591 DCR) — AS endpoints.
 - `RequireAuthMiddleware` in front of `/mcp` — emits the spec-compliant `WWW-Authenticate: Bearer ... resource_metadata=...` on 401.
 
-`__main__.py` appends two custom routes for the human passcode step:
-
-- `GET /login` → minimal HTML form (rendered by `PexelsOAuthProvider.render_login_page`).
-- `POST /login/callback` → validates the passcode and issues the authorization code.
+**No custom `/login` route**: the provider's `authorize()` method generates the authorization code and returns the client redirect URI directly, so the SDK turns it into a 302 with no server-side page. The flow appears instantaneous to the human user.
 
 The OAuth flow in one diagram (claude.ai's perspective):
 
 ```text
-GET  /mcp               -> 401 + WWW-Authenticate (resource_metadata URL)
-GET  /.well-known/...   -> AS + RS metadata
-POST /register          -> client_id
-GET  /authorize?state.. -> 302 -> /login?state=...
-GET  /login?state=...   -> HTML form
-POST /login/callback    -> 302 -> client redirect_uri?code=...&state=...
-POST /token             -> { access_token: "mcp_..." }
-POST /mcp + Bearer      -> JSON-RPC OK
+GET  /mcp                -> 401 + WWW-Authenticate (resource_metadata URL)
+GET  /.well-known/...    -> AS + RS metadata
+POST /register           -> client_id
+GET  /authorize?state... -> 302 -> client_redirect_uri?code=...&state=...
+POST /token              -> { access_token: "mcp_..." }
+POST /mcp + Bearer       -> JSON-RPC OK
 ```
+
+**Why auto-approve is OK here**: the OAuth token issued by this server is not a user identity — it only proves the client navigated the spec-compliant handshake every MCP HTTP client (claude.ai, Claude Desktop, MCP Inspector, …) runs unconditionally. The real authentication of every tool call is the caller's own `X-Pexels-Api-Key` header forwarded to `api.pexels.com`; without a valid Pexels key, every tool returns an actionable auth error from the upstream API. The server therefore cannot be abused to consume someone else's Pexels quota.
 
 ### Per-request Pexels key resolution
 

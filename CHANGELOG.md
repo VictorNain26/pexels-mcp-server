@@ -4,6 +4,13 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ## [Unreleased]
 
+### Breaking (public-MCP variant)
+- The OAuth flow is now **auto-approved**: there is no `/login` page, no shared passcode, no human consent step. Anyone with a Pexels API key can connect any MCP HTTP client. The Bearer token issued by `/token` only proves the client navigated the spec-compliant handshake every MCP HTTP client runs unconditionally; the real authentication of every tool call is the caller's own `X-Pexels-Api-Key` header forwarded to `api.pexels.com`.
+- **Removed env var**: `MCP_AUTH_PASSCODE`. Drop it from your hosted deployment.
+- **Removed routes**: `GET /login` and `POST /login/callback` (no longer needed).
+- **Removed methods** from `PexelsOAuthProvider`: `render_login_page`, `handle_login_callback`, `_validate_and_issue_code`, `_prune_expired_state` (state mapping is no longer used). The constructor signature dropped `passcode=` and now takes `server_url=` only.
+- This change aligns the server with the pattern used by other "public" MCPs in the Anthropic Connector Directory — anonymous OAuth with downstream API-key auth on each tool call.
+
 ### Breaking
 - HTTP authentication is now **OAuth 2.1 + RFC 9728**, served end-to-end by the MCP Python SDK (`AuthSettings` + `OAuthAuthorizationServerProvider` + `ProviderTokenVerifier`). The hand-rolled static-Bearer middleware is gone. Clients that previously sent `Authorization: Bearer <MCP_AUTH_TOKEN>` no longer work — they must speak the standard MCP authorization flow (claude.ai web custom connectors, Claude Desktop remote connectors, Claude Code HTTP, MCP Inspector all handle this natively).
 - Env-var rename in HTTP mode:

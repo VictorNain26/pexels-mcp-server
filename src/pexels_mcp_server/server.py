@@ -118,12 +118,17 @@ def _resolve_api_key(ctx: Context) -> str | None:  # type: ignore[type-arg]
 def _build_oauth_settings() -> tuple[PexelsOAuthProvider, AuthSettings] | None:
     """Resolve OAuth wiring from the environment.
 
-    The HTTP transport requires OAuth; stdio leaves it off (local clients
-    inject ``PEXELS_API_KEY`` directly). When HTTP mode is selected and the
-    env vars are missing we **fail closed**: raising at module import time
-    aborts any boot path that tries to run the server unauthenticated,
-    including alternate entrypoints like ``uvicorn pexels_mcp_server.server:mcp``
-    that bypass ``__main__`` (and therefore bypass ``_validate_http_env``).
+    The HTTP transport requires the OAuth endpoints to be reachable; stdio
+    leaves them off (local clients inject ``PEXELS_API_KEY`` directly). When
+    HTTP mode is selected and ``MCP_SERVER_URL`` is missing we **fail
+    closed**: raising at module import time aborts any boot path that tries
+    to run the server with unreachable metadata, including alternate
+    entrypoints like ``uvicorn pexels_mcp_server.server:mcp`` that bypass
+    ``__main__`` (and therefore bypass ``_validate_http_env``).
+
+    The flow is **auto-approve**: ``PexelsOAuthProvider`` issues codes
+    without a human consent step. The real authentication of each tool call
+    is the caller's own ``X-Pexels-Api-Key`` header forwarded to Pexels.
 
     We return the provider and the ``AuthSettings`` only — the SDK derives
     the token verifier from the provider internally via
@@ -136,24 +141,16 @@ def _build_oauth_settings() -> tuple[PexelsOAuthProvider, AuthSettings] | None:
         return None
 
     server_url = os.environ.get("MCP_SERVER_URL", "").strip()
-    passcode = os.environ.get("MCP_AUTH_PASSCODE", "").strip()
-    if not server_url or not passcode:
-        missing = [
-            name
-            for name, value in (
-                ("MCP_SERVER_URL", server_url),
-                ("MCP_AUTH_PASSCODE", passcode),
-            )
-            if not value
-        ]
+    if not server_url:
         raise RuntimeError(
-            "TRANSPORT=streamable-http requires "
-            + ", ".join(missing)
-            + ". Set them in the environment or switch to TRANSPORT=stdio "
-            "for unauthenticated local use."
+            "TRANSPORT=streamable-http requires MCP_SERVER_URL "
+            "(the public HTTPS URL of this service, used as the OAuth "
+            "issuer_url and the RFC 9728 resource_server_url). Set it in "
+            "the environment or switch to TRANSPORT=stdio for "
+            "unauthenticated local use."
         )
 
-    provider = PexelsOAuthProvider(server_url=server_url, passcode=passcode)
+    provider = PexelsOAuthProvider(server_url=server_url)
     server_url_obj = AnyHttpUrl(server_url)
     auth = AuthSettings(
         issuer_url=server_url_obj,
@@ -217,24 +214,6 @@ if _oauth_settings is not None:
         auth_server_provider=_auth_provider,
         auth=_auth_settings,
     )
-
-    # Register the /login routes via the SDK's custom_route decorator (the
-    # documented public API for adding non-MCP Starlette routes). The
-    # decorator places these routes outside the Bearer auth gate so the
-    # user-agent can hit /login during the /authorize flow before any token
-    # exists — which is the whole point of the passcode step.
-    from starlette.requests import Request
-    from starlette.responses import Response
-
-    @mcp.custom_route("/login", methods=["GET"])
-    async def _login(request: Request) -> Response:
-        assert oauth_provider is not None  # _oauth_settings is set
-        return await oauth_provider.render_login_page(request)
-
-    @mcp.custom_route("/login/callback", methods=["POST"])
-    async def _login_callback(request: Request) -> Response:
-        assert oauth_provider is not None
-        return await oauth_provider.handle_login_callback(request)
 else:
     mcp = FastMCP(
         name="pexels-mcp-server",
