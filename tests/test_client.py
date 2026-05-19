@@ -140,6 +140,31 @@ async def test_client_surfaces_persistent_500(httpx_mock: HTTPXMock) -> None:
             await client.curated_photos(api_key="testkey", per_page=5)
 
 
+async def test_list_my_collections_targets_collections_root(httpx_mock: HTTPXMock) -> None:
+    # GET /v1/collections (the bare root, NOT /v1/collections/featured) returns
+    # the collections owned by the API key holder.
+    payload = {
+        "page": 1,
+        "per_page": 15,
+        "total_results": 2,
+        "collections": [
+            {"id": "abc", "title": "My moodboard", "private": False},
+            {"id": "def", "title": "Hidden picks", "private": True},
+        ],
+    }
+    httpx_mock.add_response(
+        url=f"{BASE_URL}/v1/collections?page=1&per_page=15",
+        json=payload,
+        headers=_rate_headers(),
+        match_headers={"Authorization": "testkey"},
+    )
+    async with PexelsClient() as client:
+        body, rate = await client.list_my_collections(api_key="testkey")
+    assert body["total_results"] == 2
+    assert body["collections"][0]["id"] == "abc"
+    assert rate["limit"] == 20_000
+
+
 async def test_client_drops_none_query_params(httpx_mock: HTTPXMock) -> None:
     httpx_mock.add_response(
         url=f"{BASE_URL}/v1/search?query=cat&page=1&per_page=15",

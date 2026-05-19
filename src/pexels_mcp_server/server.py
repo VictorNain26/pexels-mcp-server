@@ -15,14 +15,14 @@ import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import Any
 
+from mcp.server.auth.settings import AuthSettings, ClientRegistrationOptions
 from mcp.server.fastmcp import Context, FastMCP
-from mcp.server.fastmcp.utilities.types import Image
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
-from pydantic import ValidationError
+from pydantic import AnyHttpUrl, ValidationError
 
+from .auth import MCP_SCOPE, PexelsOAuthProvider
 from .client import (
     PexelsAPIError,
     PexelsAuthError,
@@ -37,7 +37,6 @@ from .formatters import (
     format_single_video,
     format_video_list,
 )
-from .previews import fetch_thumbnails
 from .schemas import (
     CollectionMediaParams,
     CollectionMediaType,
@@ -45,10 +44,10 @@ from .schemas import (
     FeaturedCollectionsParams,
     GetPhotoParams,
     GetVideoParams,
+    MyCollectionsParams,
     Orientation,
     PhotoSize,
     PopularVideosParams,
-    PreviewMediaParams,
     ResponseFormat,
     SearchPhotosParams,
     SearchVideosParams,
@@ -116,6 +115,65 @@ def _resolve_api_key(ctx: Context) -> str | None:  # type: ignore[type-arg]
     return os.environ.get("PEXELS_API_KEY", "").strip() or None
 
 
+def _build_oauth_settings() -> tuple[PexelsOAuthProvider, AuthSettings] | None:
+    """Resolve OAuth wiring from the environment.
+
+    The HTTP transport requires OAuth; stdio leaves it off (local clients
+    inject ``PEXELS_API_KEY`` directly). When HTTP mode is selected and the
+    env vars are missing we **fail closed**: raising at module import time
+    aborts any boot path that tries to run the server unauthenticated,
+    including alternate entrypoints like ``uvicorn pexels_mcp_server.server:mcp``
+    that bypass ``__main__`` (and therefore bypass ``_validate_http_env``).
+
+    We return the provider and the ``AuthSettings`` only — the SDK derives
+    the token verifier from the provider internally via
+    ``ProviderTokenVerifier(auth_server_provider)``. Passing
+    ``token_verifier=`` explicitly alongside ``auth_server_provider`` is a
+    ``ValueError`` per the SDK contract.
+    """
+    transport = os.environ.get("TRANSPORT", "stdio").strip().lower()
+    if transport != "streamable-http":
+        return None
+
+    server_url = os.environ.get("MCP_SERVER_URL", "").strip()
+    passcode = os.environ.get("MCP_AUTH_PASSCODE", "").strip()
+    if not server_url or not passcode:
+        missing = [
+            name
+            for name, value in (
+                ("MCP_SERVER_URL", server_url),
+                ("MCP_AUTH_PASSCODE", passcode),
+            )
+            if not value
+        ]
+        raise RuntimeError(
+            "TRANSPORT=streamable-http requires "
+            + ", ".join(missing)
+            + ". Set them in the environment or switch to TRANSPORT=stdio "
+            "for unauthenticated local use."
+        )
+
+    provider = PexelsOAuthProvider(server_url=server_url, passcode=passcode)
+    server_url_obj = AnyHttpUrl(server_url)
+    auth = AuthSettings(
+        issuer_url=server_url_obj,
+        resource_server_url=server_url_obj,
+        required_scopes=[MCP_SCOPE],
+        client_registration_options=ClientRegistrationOptions(
+            enabled=True,
+            valid_scopes=[MCP_SCOPE],
+            default_scopes=[MCP_SCOPE],
+        ),
+    )
+    return provider, auth
+
+
+_oauth_settings = _build_oauth_settings()
+oauth_provider: PexelsOAuthProvider | None = (
+    _oauth_settings[0] if _oauth_settings is not None else None
+)
+
+
 def _build_transport_security() -> TransportSecuritySettings:
     """Configure DNS rebinding protection for the HTTP transport.
 
@@ -135,19 +193,56 @@ def _build_transport_security() -> TransportSecuritySettings:
     )
 
 
-mcp: FastMCP = FastMCP(
-    name="pexels-mcp-server",
-    lifespan=_lifespan,
-    transport_security=_build_transport_security(),
-    # Streamable HTTP is run stateless: every request carries its own context,
-    # no Mcp-Session-Id is allocated, the response is one JSON object instead
-    # of an SSE stream. The MCP 2025-06-18 spec keeps Mcp-Session-Id as
-    # OPTIONAL; opting out of sessions is the SDK-recommended posture for
-    # horizontally scaled hosted deployments (Koyeb, Fly, Cloud Run) where
-    # any instance must be able to handle any request without sticky routing.
-    stateless_http=True,
-    json_response=True,
-)
+# When TRANSPORT=streamable-http and the OAuth env vars are set, FastMCP
+# mounts the AS routes (/authorize, /token, /register, /.well-known/
+# oauth-authorization-server) and the RS metadata (/.well-known/
+# oauth-protected-resource) automatically, plus wraps /mcp with the Bearer
+# validator. In stdio mode (_oauth_settings is None), FastMCP behaves as a
+# plain unauthenticated server.
+#
+# Streamable HTTP is run stateless: every request carries its own context,
+# no Mcp-Session-Id is allocated, the response is one JSON object instead of
+# an SSE stream. The MCP 2025-06-18 spec keeps Mcp-Session-Id as OPTIONAL;
+# opting out of sessions is the SDK-recommended posture for horizontally
+# scaled hosted deployments where any instance must be able to handle any
+# request without sticky routing.
+if _oauth_settings is not None:
+    _auth_provider, _auth_settings = _oauth_settings
+    mcp: FastMCP = FastMCP(
+        name="pexels-mcp-server",
+        lifespan=_lifespan,
+        transport_security=_build_transport_security(),
+        stateless_http=True,
+        json_response=True,
+        auth_server_provider=_auth_provider,
+        auth=_auth_settings,
+    )
+
+    # Register the /login routes via the SDK's custom_route decorator (the
+    # documented public API for adding non-MCP Starlette routes). The
+    # decorator places these routes outside the Bearer auth gate so the
+    # user-agent can hit /login during the /authorize flow before any token
+    # exists — which is the whole point of the passcode step.
+    from starlette.requests import Request
+    from starlette.responses import Response
+
+    @mcp.custom_route("/login", methods=["GET"])
+    async def _login(request: Request) -> Response:
+        assert oauth_provider is not None  # _oauth_settings is set
+        return await oauth_provider.render_login_page(request)
+
+    @mcp.custom_route("/login/callback", methods=["POST"])
+    async def _login_callback(request: Request) -> Response:
+        assert oauth_provider is not None
+        return await oauth_provider.handle_login_callback(request)
+else:
+    mcp = FastMCP(
+        name="pexels-mcp-server",
+        lifespan=_lifespan,
+        transport_security=_build_transport_security(),
+        stateless_http=True,
+        json_response=True,
+    )
 
 
 _READ_ONLY_ANNOTATIONS = ToolAnnotations(
@@ -547,58 +642,46 @@ async def pexels_get_collection_media(
 
 
 @mcp.tool(
-    name="pexels_preview_media",
-    title="Preview Pexels Thumbnails Visually",
+    name="pexels_get_my_collections",
+    title="List Pexels Collections Owned by the API Key Holder",
     annotations=_READ_ONLY_ANNOTATIONS,
-    structured_output=False,
 )
-async def pexels_preview_media(
+async def pexels_get_my_collections(
     ctx: Context,  # type: ignore[type-arg]
-    thumbnail_urls: list[str],
-) -> Any:
-    """Fetch small Pexels thumbnails and return them as inline images.
+    page: int = 1,
+    per_page: int = 15,
+    response_format: ResponseFormat = ResponseFormat.JSON,
+) -> str:
+    """List the Pexels collections owned by the current API key holder.
 
-    USE WHEN: you ran a search, you have 2-6 candidates, and you need to
-      see them to pick the best fit. Pass the ``thumbnail_url`` field of
-      photos or the ``preview_image_url`` field of videos that the search
-      tools already returned.
-    DO NOT USE WHEN: you have not searched yet. Search first; this tool
-      does not look anything up. Also skip this tool if the client model
-      cannot consume image content (text-only models). For pure text
-      picking, the ``alt`` field on each photo is already in the search
-      envelope and is enough most of the time.
+    USE WHEN: the user wants to browse the collections they have built on
+      their own Pexels account (their saved curated sets), not Pexels'
+      editorial picks. Example: "show me my Pexels collections" after the
+      user has organised photos into folders on pexels.com.
+    DO NOT USE WHEN: the user wants editor-curated themed bundles. Call
+      ``pexels_list_featured_collections`` instead. Also do not use when no
+      Pexels API key is in scope — the endpoint returns the caller's own
+      collections only.
 
-    Returns one TextContent block summarizing the batch followed by one
-    ImageContent block per URL (in the same order). Each thumbnail is
-    base64-encoded inline; the calling model decides which id to use.
+    Returns the same envelope shape as ``pexels_list_featured_collections``:
+    ``{collections: [{id, title, description, media_count, photos_count,
+    videos_count}], page, per_page, total_results, ...}``. Feed any ``id``
+    into ``pexels_get_collection_media`` to fetch its contents.
 
-    Only URLs whose host is ``images.pexels.com`` are accepted. Anything
-    else is rejected at validation time. Maximum 6 URLs per call. Each
-    thumbnail body is capped at 256 KB; oversized files come back as an
-    error string instead of an image, with the rest of the batch
-    untouched.
+    Per-page maximum is 80 (Pexels limit). The collections include both
+    public and private collections — Pexels does not surface a flag here.
     """
     try:
-        params = PreviewMediaParams(thumbnail_urls=thumbnail_urls)
-        results = await fetch_thumbnails(params.thumbnail_urls)
+        params = MyCollectionsParams(
+            page=page,
+            per_page=per_page,
+            response_format=response_format,
+        )
+        payload, rate_limit = await _client(ctx).list_my_collections(
+            api_key=_resolve_api_key(ctx),
+            page=params.page,
+            per_page=params.per_page,
+        )
+        return format_collection_list(payload, rate_limit, params.response_format.value)
     except Exception as exc:
-        return [_format_error(exc)]
-
-    blocks: list[str | Image] = []
-    ok = sum(1 for r in results if r.image is not None)
-    summary_lines = [f"Loaded {ok}/{len(results)} thumbnails:"]
-    for index, result in enumerate(results, start=1):
-        if result.image is not None:
-            summary_lines.append(f"  {index}. {result.url} - ok")
-        else:
-            # Sanitize before model injection: httpx exception strings can
-            # contain TLS cert details, IP addresses or redirect chains we
-            # do not want flowing into the agent context.
-            raw_error = result.error or "unknown error"
-            safe_error = raw_error.replace("\n", " ").replace("\r", " ")[:80]
-            summary_lines.append(f"  {index}. {result.url} - failed: {safe_error}")
-    blocks.append("\n".join(summary_lines))
-    for result in results:
-        if result.image is not None:
-            blocks.append(result.image)
-    return blocks
+        return _format_error(exc)

@@ -1,24 +1,25 @@
-"""ASGI middleware used by the Streamable HTTP transport.
+"""ASGI middleware for the Streamable HTTP transport.
 
-Three things live here:
+Two pieces live here:
 
-1. ``healthz_middleware`` - short-circuit ``GET /healthz`` so platform liveness
-   probes never hit the MCP routes (which would 405 / 401).
-2. ``bearer_auth_middleware`` - shared-secret Bearer gate driven by the
-   ``MCP_AUTH_TOKEN`` env var. Protects the host's CPU / bandwidth from random
-   internet traffic.
-3. ``pexels_key_middleware`` - extracts the per-request ``X-Pexels-Api-Key``
+1. ``healthz_middleware`` — short-circuits ``GET /healthz`` and ``GET /readyz``
+   so platform probes do not exercise the MCP routes (which would 405 or
+   trigger an OAuth challenge).
+2. ``pexels_key_middleware`` — extracts the per-request ``X-Pexels-Api-Key``
    header into a ``ContextVar`` so the tool handlers can resolve the caller's
-   own Pexels key without it ever being part of the server's static config.
+   own Pexels key without ever storing it in the server config.
 
-The stdio transport bypasses all three and keeps using the ``PEXELS_API_KEY``
-env var as the only source of truth, which matches how local clients
-(Claude Desktop, Claude Code) inject the key today.
+OAuth Bearer validation is **not** done here — FastMCP wraps the ``/mcp``
+endpoint with its own ``RequireAuthMiddleware`` once a ``token_verifier`` is
+configured, and emits the spec-compliant ``WWW-Authenticate`` header pointing
+to the RFC 9728 Protected Resource Metadata URL.
+
+The stdio transport bypasses both middlewares and reads ``PEXELS_API_KEY``
+straight from the environment.
 """
 
 from __future__ import annotations
 
-import hmac
 import logging
 from collections.abc import Awaitable, Callable
 from contextvars import ContextVar
@@ -52,26 +53,14 @@ async def _send_text(send: ASGISend, status: int, body: bytes) -> None:
     await send({"type": "http.response.body", "body": body, "more_body": False})
 
 
-def _extract_bearer(scope: ASGIScope) -> str | None:
-    headers: list[tuple[bytes, bytes]] = scope.get("headers", [])
-    for name, value in headers:
-        if name.lower() == b"authorization":
-            decoded: str = value.decode("latin-1", errors="ignore").strip()
-            if decoded.lower().startswith("bearer "):
-                return decoded[7:].strip()
-            return None
-    return None
-
-
 def healthz_middleware(app: ASGIApp) -> ASGIApp:
-    """Short-circuit ``GET /healthz`` and ``GET /readyz`` so platform probes
-    do not exercise the MCP transport (which would 405 on a plain GET).
+    """Short-circuit ``GET /healthz`` and ``GET /readyz`` with ``200 ok``.
 
-    ``/healthz`` is the liveness probe: returns 200 as soon as the process is
-    up. ``/readyz`` is the readiness probe: same shape today (the server has
-    no async warmup), exposed separately so Koyeb / Fly can wire each probe
-    to its own path and we can grow the readiness check later (e.g. ping
-    Pexels) without affecting liveness semantics.
+    ``/healthz`` is the liveness probe — returns 200 as soon as the process
+    is up. ``/readyz`` is the readiness probe — same shape today, exposed on
+    a separate path so platforms can wire each probe independently and we
+    can grow the readiness check later (e.g. ping Pexels) without affecting
+    liveness semantics.
     """
 
     async def wrapped(scope: ASGIScope, receive: ASGIReceive, send: ASGISend) -> None:
@@ -86,12 +75,12 @@ def healthz_middleware(app: ASGIApp) -> ASGIApp:
 def pexels_key_middleware(app: ASGIApp) -> ASGIApp:
     """Extract ``X-Pexels-Api-Key`` from the request headers into a ContextVar.
 
-    The Pexels key never sits in the server's static config: each caller has
-    to send their own key with every request. This middleware reads the
-    header once per request and lets the tool handlers pick it up from the
-    contextvar; the value is reset right after the downstream app runs so
-    nothing leaks across requests (uvicorn already isolates contextvars per
-    task, but resetting is cheap and defensive).
+    The Pexels key is never part of the server's static config: each caller
+    sends their own key with every request. This middleware reads the header
+    once per request and lets the tool handlers pick it up from the context
+    var; the value is reset right after the downstream app runs so nothing
+    leaks across requests (uvicorn already isolates ContextVars per task,
+    but resetting is cheap and defensive).
     """
 
     async def wrapped(scope: ASGIScope, receive: ASGIReceive, send: ASGISend) -> None:
@@ -114,40 +103,5 @@ def pexels_key_middleware(app: ASGIApp) -> ASGIApp:
             await app(scope, receive, send)
         finally:
             pexels_key_ctx.reset(token)
-
-    return wrapped
-
-
-def bearer_auth_middleware(app: ASGIApp, expected_token: str) -> ASGIApp:
-    """Reject HTTP requests without ``Authorization: Bearer <expected_token>``.
-
-    The token is compared with ``hmac.compare_digest`` to dodge trivial timing
-    side channels. Non-HTTP scopes (websocket, lifespan) pass through.
-    """
-
-    expected = expected_token.encode("utf-8")
-
-    async def wrapped(scope: ASGIScope, receive: ASGIReceive, send: ASGISend) -> None:
-        if scope.get("type") != "http":
-            await app(scope, receive, send)
-            return
-        if scope.get("path") in ("/healthz", "/readyz"):
-            await app(scope, receive, send)
-            return
-        presented = _extract_bearer(scope)
-        if presented is None or not hmac.compare_digest(presented.encode("utf-8"), expected):
-            # Log the remote IP only (drop the port) to limit per-connection
-            # identifiers in platform log stores. Port adds nothing diagnostic
-            # for an external attacker.
-            client = scope.get("client")
-            client_ip = client[0] if isinstance(client, tuple | list) and client else "?"
-            logger.warning(
-                "rejected unauthenticated request to %s from %s",
-                scope.get("path"),
-                client_ip,
-            )
-            await _send_text(send, 401, b"unauthorized\n")
-            return
-        await app(scope, receive, send)
 
     return wrapped

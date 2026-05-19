@@ -4,18 +4,34 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ## [Unreleased]
 
+### Breaking
+- HTTP authentication is now **OAuth 2.1 + RFC 9728**, served end-to-end by the MCP Python SDK (`AuthSettings` + `OAuthAuthorizationServerProvider` + `ProviderTokenVerifier`). The hand-rolled static-Bearer middleware is gone. Clients that previously sent `Authorization: Bearer <MCP_AUTH_TOKEN>` no longer work — they must speak the standard MCP authorization flow (claude.ai web custom connectors, Claude Desktop remote connectors, Claude Code HTTP, MCP Inspector all handle this natively).
+- Env-var rename in HTTP mode:
+  - **Removed**: `MCP_AUTH_TOKEN`, `MCP_ALLOW_UNAUTHED`.
+  - **Required**: `MCP_SERVER_URL` (public HTTPS URL of the service, used as both OAuth `issuer_url` and RFC 9728 `resource_server_url`) and `MCP_AUTH_PASSCODE` (shared secret typed on the `/login` page during the OAuth flow).
+- `streamable-http` mode refuses to boot if either `MCP_SERVER_URL` or `MCP_AUTH_PASSCODE` is unset (exit code 2 with an actionable message). Stdio mode is unchanged.
+
 ### Added
-- README "Koyeb deployment guide" section: step-by-step (dashboard + CLI), explicit env-var table, HTTP `/healthz` probe configuration, public-endpoint smoke test using `MCP-Protocol-Version: 2025-06-18`, and the claude.ai custom-connector wiring. Closes the gap where the previous Koyeb section only listed four bullet points.
-- `.env.example` now lists every variable `__main__.py` actually reads: `MCP_AUTH_TOKEN`, `MCP_ALLOWED_HOSTS`, `MCP_ALLOW_UNAUTHED`, `LOG_LEVEL`, `LOG_FORMAT`. Previous version omitted half of them.
-- `MCP_ALLOWED_HOSTS={{ KOYEB_PUBLIC_DOMAIN }}` is now recommended in the Koyeb env-var table. Re-enables the Origin/Host validation the MCP 2025-06-18 spec marks as `MUST` for Streamable HTTP servers, without breaking generic platform deployments where the hostname is unknown ahead of time.
-- `CLAUDE.md` (Claude Code repo guide) and `PRIVACY.md` added to `.dockerignore` so they never ship in the runtime image.
+- `src/pexels_mcp_server/auth.py` — `PexelsOAuthProvider` implementing the SDK's `OAuthAuthorizationServerProvider` protocol: in-memory client store (DCR per RFC 7591), authorization-code grant with PKCE, audience-bound tokens (RFC 8707 `resource` indicator threaded through code → token), short-lived access tokens (1 h), no refresh tokens (clients re-auth on expiry). Includes a minimal `/login` HTML form that asks the user for the shared passcode.
+- `tests/test_auth.py` — 14 unit tests covering register/get client, authorize, login page render, callback success / wrong passcode / unknown state / missing fields, code exchange, token expiry, revocation, refresh-token rejection.
+- README rewritten as a single hosted-OAuth deployment guide. Every MCP HTTP client (claude.ai web, Claude Desktop, Claude Code, MCP Inspector) uses the same `/mcp` URL and the same OAuth flow; stdio is documented as a power-user mode for Cursor only. The Koyeb section walks the dashboard and CLI routes end-to-end with the new env vars.
 
 ### Changed
-- `uvicorn.timeout_graceful_shutdown` bumped from `8` to `25` seconds. Koyeb (and Fly) send `SIGTERM` and wait ~30 s before `SIGKILL`; the previous 8 s window was tight and risked dropping in-flight Pexels API calls during rolling deploys. 25 s leaves a 5 s buffer for uvicorn's own teardown.
-- Reworded the `stateless_http=True` rationale comment in `server.py`. The previous wording claimed the MCP draft was "removing session IDs entirely"; the published 2025-06-18 spec keeps `Mcp-Session-Id` as OPTIONAL. The comment now states accurately that opting out of sessions is the right posture for horizontally scaled deployments.
+- `FastMCP` is instantiated with `auth_server_provider`, `token_verifier`, and `auth=AuthSettings(...)` in HTTP mode; the SDK automatically mounts `/.well-known/oauth-protected-resource` (RFC 9728), `/.well-known/oauth-authorization-server` (RFC 8414), `/authorize`, `/token`, `/register`, and wraps `/mcp` with `RequireAuthMiddleware` that emits the spec-compliant `WWW-Authenticate` header pointing to the Protected Resource Metadata URL. `__main__.py` only appends the custom `/login` and `/login/callback` routes for the human passcode step.
+- `transport.py` reduced to two middlewares: `healthz_middleware` and `pexels_key_middleware`. The Bearer validation moved to the SDK.
+- `tests/test_transport.py` trimmed to the two surviving middlewares; the obsolete Bearer-related tests were dropped (their replacement lives in `test_auth.py`).
+- `.env.example` lists the new HTTP-mode variables (`MCP_SERVER_URL`, `MCP_AUTH_PASSCODE`) and removes the old ones. The file now explicitly names the **one supported topology**: hosted Streamable HTTP with OAuth.
+- `CLAUDE.md` reorganised around the six-layer flow (`__main__` → `server` → `auth` → `schemas` → `client` → `formatters`), the OAuth wiring diagram, and the rule "no hand-rolled OAuth — the SDK owns the auth surface".
+- `CONTRIBUTING.md` project-layout reflects the new module split (`auth.py`, `transport.py`).
+- Earlier `[Unreleased]` cleanup entries (graceful-shutdown 25 s, stateless_http comment refresh, types.py removal, `.env.example` enrichment, Koyeb deployment guide, `CLAUDE.md`/`PRIVACY.md` added to `.dockerignore`) were merged into this release.
 
 ### Removed
-- `src/pexels_mcp_server/types.py` (107 lines of `TypedDict` mirrors of the Pexels API). Zero imports across the codebase — confirmed by grepping every `PhotoDict|VideoDict|CollectionDict|RateLimitDict` reference. The types served as inline documentation only; the real shape of upstream payloads is enforced at the Pydantic input boundary and the lean JSON projections in `formatters.py`. Removing the file also drops the only direct use of `typing_extensions` (still pulled transitively via pydantic). Updated `CONTRIBUTING.md` project layout accordingly.
+- `bearer_auth_middleware`, `_extract_bearer`, and the `MCP_AUTH_TOKEN` / `MCP_ALLOW_UNAUTHED` env vars. The static-Bearer model never satisfied the MCP authorization spec (no `WWW-Authenticate`, no RFC 9728 metadata, no Dynamic Client Registration) and broke claude.ai web's custom-connector add flow.
+- `pexels_preview_media` tool + `src/pexels_mcp_server/previews.py` + `tests/test_previews.py` + `PreviewMediaParams` schema + the preview-specific constants in `constants.py` (`PEXELS_CDN_HOSTS`, `PREVIEW_MAX_COUNT`, `PREVIEW_MAX_CONCURRENT_FETCHES`, `PREVIEW_FETCH_TIMEOUT_SECONDS`, `PREVIEW_MAX_BYTES`). The tool was not part of the Pexels REST surface — it was a vision-pick convenience we invented on top — and the SSRF surface it created (server-side fetch of caller-supplied URLs) had no equivalent in the official Pexels client libraries. Dropped to keep the tool list 1:1 with the Pexels API.
+- `src/pexels_mcp_server/types.py` (107 lines of orphan `TypedDict` mirrors of the Pexels API) — already shipped under [0.6.0]'s `[Unreleased]` entry, kept here for the consolidated release notes.
+
+### Tools added in this release
+- `pexels_get_my_collections` — wraps the Pexels `GET /v1/collections` endpoint (the bare root, not `/featured`). Lists the collections owned by the API key holder, same envelope shape as `pexels_list_featured_collections`. No OAuth Pexels required: the standard `Authorization: <api_key>` scheme works (confirmed against the official Pexels API docs). Brings the tool count back to nine and the project's coverage to 1:1 with the Pexels REST surface.
 
 ## [0.6.0] - 2026-05-19
 

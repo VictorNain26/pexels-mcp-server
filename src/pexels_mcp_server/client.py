@@ -302,6 +302,23 @@ class PexelsClient:
             api_key=self._require_key(api_key),
         )
 
+    async def list_my_collections(
+        self,
+        *,
+        api_key: str | None,
+        page: int = 1,
+        per_page: int = 15,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        # GET /v1/collections returns the collections owned by the API key
+        # holder. Same Authorization scheme as every other endpoint; the
+        # response shape mirrors /v1/collections/featured so format_collection_list
+        # can be reused.
+        return await self._request(
+            COLLECTIONS_PREFIX,
+            {"page": page, "per_page": per_page},
+            api_key=self._require_key(api_key),
+        )
+
     async def get_collection_media(
         self,
         *,
