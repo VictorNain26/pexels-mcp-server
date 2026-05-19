@@ -35,9 +35,9 @@ CI matrix: Python 3.10/3.11/3.12 + Docker build & boot smoke test on every PR.
 
 ## Architecture
 
-Five-layer flow, each layer with one job:
+Five-layer request flow plus two helpers:
 
-```
+```text
 __main__.py     transport selection, stderr logging, HTTP middleware wiring
    ↓
 server.py       FastMCP server + 9 @mcp.tool functions (input shaping, key resolution, error formatting)
@@ -47,6 +47,8 @@ schemas.py      Pydantic v2 input models (extra="forbid", host allowlist, locale
 client.py       Async httpx wrapper, one retry on 5xx with jittered backoff, never stores a key
    ↓
 formatters.py   Token-lean JSON projections + Markdown summaries + rate_limit envelope
+
+Helpers (off the main path):
 previews.py     Concurrent thumbnail fetcher for the visual-pick tool (semaphore-capped)
 transport.py    ASGI middleware: /healthz, Bearer auth, X-Pexels-Api-Key extractor
 ```
@@ -69,7 +71,7 @@ FastMCP is configured with `stateless_http=True, json_response=True`. This means
 
 Built outside-in in `__main__.main()`:
 
-```
+```text
 healthz → bearer_auth → pexels_key → FastMCP streamable_http_app
 ```
 
