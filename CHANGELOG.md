@@ -10,10 +10,13 @@ Production-quality audit pass against the latest MCP spec revision
 (2025-11-25). Three buckets:
 
 **Spec compliance.**
-- Tools now return a typed `dict` instead of a JSON-encoded string. The
-  SDK fills both `structuredContent` (consumed by hosts that read it
-  directly) and a serialized JSON `TextContent` block (backwards compat)
-  — SHOULD per MCP spec 2025-11-25 for any tool returning parseable data.
+- Tools now return a `TypedDict` (`PhotoListResult`, `SinglePhotoResult`,
+  `VideoListResult`, `SingleVideoResult`, `CollectionMediaResult`) instead
+  of a JSON-encoded string. The SDK auto-generates a concrete
+  `outputSchema` (with `properties` and `required` set per shape) and
+  populates both `structuredContent` (machine-readable, validated against
+  the schema) and a JSON `TextContent` block (backwards compat) — SHOULD
+  per MCP spec 2025-11-25 for any tool returning parseable data.
 - Tool execution errors now **raise** (Pydantic `ValidationError`
   flattened to `Invalid parameters: <field>: <msg>`; Pexels errors
   propagate as-is). FastMCP marks the `CallToolResult` with
@@ -37,6 +40,15 @@ Production-quality audit pass against the latest MCP spec revision
   directly. Same behaviour, half the code.
 - `PEXELS_ATTRIBUTION` constant removed (only used by the deleted
   markdown footer).
+- `PexelsOAuthProvider` gains a `max_tracked_tokens` cap (default
+  10 000) with FIFO eviction of the oldest 10 % on overflow. Symmetric
+  to the existing `max_tracked_clients` cap. Worst-case memory under
+  sustained traffic is now bounded; previously a long-running instance
+  with constant fresh-OAuth churn would grow the token store
+  unbounded until restart.
+- LLM-facing docstrings completed on `pexels_get_photo`,
+  `pexels_get_video` and `pexels_get_collection_media` (USE WHEN +
+  DO NOT USE WHEN, per the CLAUDE.md convention).
 
 **Doc drift fixes.** README, landing page, SUBMIT.md and CONTRIBUTING.md
 were still referencing the pre-2026-05-19 surface: 9 tools, `thumbnail_url`,

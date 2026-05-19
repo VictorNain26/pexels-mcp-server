@@ -1,9 +1,10 @@
-"""JSON projections for Pexels REST payloads.
+"""JSON projections + typed envelopes for Pexels REST payloads.
 
-Every tool returns a ``dict`` so FastMCP populates both ``structuredContent``
-(machine-readable, validated against the tool's ``outputSchema``) and a
-TextContent block with the serialized JSON (backwards-compat for clients
-that don't yet read structured output).
+Every tool returns a ``TypedDict`` so FastMCP can compute a real
+``outputSchema`` (concrete fields, not just ``{type: object}``). The SDK
+populates both ``structuredContent`` (machine-readable, validated against
+the schema) and a TextContent block with the serialized JSON (backwards
+compat for clients that don't yet read structured output).
 
 The shape stays deliberately minimal: every field exposed has a clear
 purpose for the LLM (alt for filtering, image_url for the download link
@@ -14,10 +15,118 @@ rate-limit chrome, no narrative captions.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, TypedDict, cast
 
 
-def photo_to_json(photo: dict[str, Any]) -> dict[str, Any]:
+class PhotoProjection(TypedDict):
+    """Minimal LLM-actionable shape for a Pexels photo."""
+
+    id: int | None
+    alt: str | None
+    page_url: str | None
+    photographer: str | None
+    photographer_url: str | None
+    width: int | None
+    height: int | None
+    image_url: str | None
+
+
+class VideoProjection(TypedDict):
+    """Minimal LLM-actionable shape for a Pexels video (top file only)."""
+
+    id: int | None
+    page_url: str | None
+    duration_seconds: int | None
+    width: int | None
+    height: int | None
+    uploader_name: str | None
+    uploader_url: str | None
+    video_url: str | None
+    quality: str | None
+
+
+class FilterDiagnostics(TypedDict):
+    """Diagnostic block surfaced when a post-hoc filter wiped every candidate."""
+
+    applied_filters: dict[str, Any]
+    pre_filter_count: int
+    post_filter_count: int
+    suggestion: str
+
+
+class _SearchListBase(TypedDict):
+    """Required pagination fields shared by every search/list envelope."""
+
+    page: int
+    per_page: int
+    count: int
+    has_more: bool
+
+
+# Per-tool intermediate bases carry the always-present ``items_key`` field
+# as ``Required``. Python 3.10 lacks ``typing.Required`` so we use the
+# subclass pattern: required keys are declared in a parent TypedDict with
+# ``total=True``, optional keys in a child with ``total=False``. Clients
+# reading the generated ``outputSchema`` see both ``photos``/``videos``
+# and the pagination fields under ``required``.
+
+
+class _PhotoListRequired(_SearchListBase):
+    photos: list[PhotoProjection]
+
+
+class PhotoListResult(_PhotoListRequired, total=False):
+    """``pexels_search_photos`` return envelope. Optional fields are only
+    emitted when the upstream payload carries them (``total_results``,
+    ``next_page``) or the post-hoc filter wiped the page
+    (``filter_diagnostics``)."""
+
+    total_results: int
+    next_page: int
+    filter_diagnostics: FilterDiagnostics
+
+
+class _VideoListRequired(_SearchListBase):
+    videos: list[VideoProjection]
+
+
+class VideoListResult(_VideoListRequired, total=False):
+    """``pexels_search_videos`` return envelope."""
+
+    total_results: int
+    next_page: int
+    filter_diagnostics: FilterDiagnostics
+
+
+class _CollectionMediaRequired(_SearchListBase):
+    id: str | None
+    photos: list[PhotoProjection]
+    videos: list[VideoProjection]
+
+
+class CollectionMediaResult(_CollectionMediaRequired, total=False):
+    """``pexels_get_collection_media`` return envelope. ``photos`` and
+    ``videos`` are always present (possibly empty) so the agent can
+    iterate both lists unconditionally."""
+
+    total_results: int
+    next_page: int
+    filter_diagnostics: FilterDiagnostics
+
+
+class SinglePhotoResult(TypedDict):
+    """``pexels_get_photo`` return envelope."""
+
+    photo: PhotoProjection
+
+
+class SingleVideoResult(TypedDict):
+    """``pexels_get_video`` return envelope."""
+
+    video: VideoProjection
+
+
+def photo_to_json(photo: dict[str, Any]) -> PhotoProjection:
     """Project a Pexels photo to the minimal LLM-actionable shape."""
     src = photo.get("src") or {}
     return {
@@ -32,7 +141,7 @@ def photo_to_json(photo: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def video_to_json(video: dict[str, Any]) -> dict[str, Any]:
+def video_to_json(video: dict[str, Any]) -> VideoProjection:
     """Project a Pexels video, keeping only the top file by resolution."""
     user = video.get("user") or {}
     files = video.get("video_files") or []
@@ -89,25 +198,31 @@ def _envelope(
     return out
 
 
-def format_photo_list(payload: dict[str, Any]) -> dict[str, Any]:
-    return _envelope(
-        payload,
-        items_key="photos",
-        items=payload.get("photos") or [],
-        media_projector=photo_to_json,
+def format_photo_list(payload: dict[str, Any]) -> PhotoListResult:
+    return cast(
+        PhotoListResult,
+        _envelope(
+            payload,
+            items_key="photos",
+            items=payload.get("photos") or [],
+            media_projector=photo_to_json,
+        ),
     )
 
 
-def format_video_list(payload: dict[str, Any]) -> dict[str, Any]:
-    return _envelope(
-        payload,
-        items_key="videos",
-        items=payload.get("videos") or [],
-        media_projector=video_to_json,
+def format_video_list(payload: dict[str, Any]) -> VideoListResult:
+    return cast(
+        VideoListResult,
+        _envelope(
+            payload,
+            items_key="videos",
+            items=payload.get("videos") or [],
+            media_projector=video_to_json,
+        ),
     )
 
 
-def format_collection_media(payload: dict[str, Any]) -> dict[str, Any]:
+def format_collection_media(payload: dict[str, Any]) -> CollectionMediaResult:
     media = payload.get("media") or []
     photos = [m for m in media if m.get("type") == "Photo"]
     videos = [m for m in media if m.get("type") == "Video"]
@@ -132,14 +247,14 @@ def format_collection_media(payload: dict[str, Any]) -> dict[str, Any]:
     diagnostics = payload.get("filter_diagnostics")
     if diagnostics:
         out["filter_diagnostics"] = diagnostics
-    return out
+    return cast(CollectionMediaResult, out)
 
 
-def format_single_photo(payload: dict[str, Any]) -> dict[str, Any]:
+def format_single_photo(payload: dict[str, Any]) -> SinglePhotoResult:
     return {"photo": photo_to_json(payload)}
 
 
-def format_single_video(payload: dict[str, Any]) -> dict[str, Any]:
+def format_single_video(payload: dict[str, Any]) -> SingleVideoResult:
     return {"video": video_to_json(payload)}
 
 

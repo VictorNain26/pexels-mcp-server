@@ -30,6 +30,11 @@ from .auth import MCP_SCOPE, PexelsOAuthProvider
 from .client import PexelsAPIError, PexelsClient
 from .constants import MAX_PER_PAGE
 from .formatters import (
+    CollectionMediaResult,
+    PhotoListResult,
+    SinglePhotoResult,
+    SingleVideoResult,
+    VideoListResult,
     filter_by_dimensions,
     format_collection_media,
     format_photo_list,
@@ -382,7 +387,7 @@ async def pexels_search_photos(
     aspect_ratio: str | None = None,
     page: int = 1,
     per_page: int = 15,
-) -> dict[str, Any]:
+) -> PhotoListResult:
     """Search free, commercially-usable stock photos on Pexels.
 
     USE WHEN the user asks for photos / illustrations / visuals for any
@@ -445,11 +450,13 @@ async def pexels_search_photos(
 async def pexels_get_photo(
     ctx: Context,  # type: ignore[type-arg]
     photo_id: int,
-) -> dict[str, Any]:
+) -> SinglePhotoResult:
     """Fetch one Pexels photo by numeric id.
 
     USE WHEN you already have a Pexels photo id (from a previous search
-    or extracted from a pexels.com URL) and need the canonical record.
+      response, or extracted from a pexels.com URL ending in ``-<id>``).
+    DO NOT USE for discovery — for that, call ``pexels_search_photos``
+      with a query. Don't pass guessed / made-up ids; Pexels returns 404.
 
     Returns ``{photo: {id, alt, page_url, photographer, photographer_url,
     width, height, image_url}}``. Hand ``image_url`` to the user as a
@@ -479,7 +486,7 @@ async def pexels_search_videos(
     aspect_ratio: str | None = None,
     page: int = 1,
     per_page: int = 15,
-) -> dict[str, Any]:
+) -> VideoListResult:
     """Search free, commercially-usable stock videos on Pexels.
 
     USE WHEN the user asks for video clips, B-roll, reels, hero loops,
@@ -530,8 +537,13 @@ async def pexels_search_videos(
 async def pexels_get_video(
     ctx: Context,  # type: ignore[type-arg]
     video_id: int,
-) -> dict[str, Any]:
+) -> SingleVideoResult:
     """Fetch one Pexels video by numeric id.
+
+    USE WHEN you already have a Pexels video id (from a previous search
+      response, or extracted from a pexels.com URL ending in ``-<id>``).
+    DO NOT USE for discovery — for that, call ``pexels_search_videos``
+      with a query. Don't pass guessed / made-up ids; Pexels returns 404.
 
     Returns ``{video: {id, page_url, duration_seconds, width, height,
     uploader_name, uploader_url, video_url, quality}}``. Hand
@@ -560,12 +572,16 @@ async def pexels_get_collection_media(
     aspect_ratio: str | None = None,
     page: int = 1,
     per_page: int = 15,
-) -> dict[str, Any]:
+) -> CollectionMediaResult:
     """Read the photos + videos inside a Pexels collection.
 
-    USE WHEN you already have a collection id (Pexels URL ends with it).
-    Filter to photos-only or videos-only with ``type``. Post-hoc filters
-    (``min_width``, ``min_height``, ``aspect_ratio``) apply to both.
+    USE WHEN you already have a collection id (Pexels URL ends with it,
+      e.g. ``9j5dhpu`` in ``pexels.com/collections/9j5dhpu``). Filter to
+      photos-only or videos-only with ``type``. Post-hoc filters
+      (``min_width``, ``min_height``, ``aspect_ratio``) apply to both.
+    DO NOT USE for discovery — Pexels has no public "list all collections"
+      endpoint; the agent must already know the id from a user-supplied
+      URL or a previous turn.
 
     Returns ``{id, page, per_page, count, has_more, next_page?,
     total_results?, photos:[...], videos:[...]}`` with the same per-item

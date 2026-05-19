@@ -136,12 +136,14 @@ class PexelsOAuthProvider(
         *,
         server_url: str,
         max_tracked_clients: int = 10_000,
+        max_tracked_tokens: int = 10_000,
         setup_path: str = "/setup",
     ) -> None:
         if not server_url:
             raise ValueError("server_url is required")
         self._server_url = server_url.rstrip("/")
         self._max_tracked_clients = max_tracked_clients
+        self._max_tracked_tokens = max_tracked_tokens
         self._setup_path = setup_path
 
         self._clients: dict[str, OAuthClientInformationFull] = {}
@@ -337,6 +339,21 @@ class PexelsOAuthProvider(
             raise ValueError("Invalid authorization code")
         if not client.client_id:
             raise ValueError("No client_id provided")
+
+        # Bound memory under sustained traffic: cap the token store and evict
+        # the oldest entries when full. Symmetric to ``register_client``'s cap
+        # on ``self._clients``. Any client whose token is evicted re-walks
+        # OAuth on the next call — same UX cost as a server restart.
+        if len(self._tokens) >= self._max_tracked_tokens:
+            drop_count = max(1, self._max_tracked_tokens // 10)
+            for stale_token in list(self._tokens.keys())[:drop_count]:
+                del self._tokens[stale_token]
+                self._token_to_key.pop(stale_token, None)
+            logger.warning(
+                "OAuth token store hit cap (%d), evicted oldest %d entries",
+                self._max_tracked_tokens,
+                drop_count,
+            )
 
         access_token_str = f"mcp_{secrets.token_hex(32)}"
         self._tokens[access_token_str] = AccessToken(
