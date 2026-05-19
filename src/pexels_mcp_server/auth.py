@@ -26,14 +26,25 @@ SDK-managed OAuth surface:
    redirect URI with ``code`` + ``state`` appended.
 5. The user-agent follows the redirect, the client exchanges the code for
    an access token via ``/token``, and the bound Pexels key is moved
-   from the (code → key) map to the (token → key) map.
+   from the (code → key) map to the persistent (token → key) store.
 6. On every tool call, the server reads the Bearer access token from the
    request, looks up the bound Pexels key, and forwards it to Pexels.
    The X-Pexels-Api-Key header remains a fallback for clients (Claude
    Desktop, Cursor, MCP Inspector) that prefer the per-request pattern.
 
-All state lives in process memory. A restart invalidates every token and
-forces clients to walk the flow again on the next call.
+Persistence
+-----------
+
+Long-lived state (DCR clients, access tokens, bound Pexels keys) lives
+in a :class:`TokenStore` injected by the caller. The default
+:class:`InMemoryTokenStore` keeps the historical "wipe on restart"
+behaviour; :class:`RedisTokenStore` (selected automatically when
+``REDIS_URL`` is set) makes the same state survive restarts so users
+don't have to re-walk OAuth on every redeploy.
+
+Short-lived state (auth codes, pending /setup sessions, the transient
+code→key binding) stays in process memory regardless of backend: their
+TTLs are 5 / 15 minutes and persisting them buys nothing.
 
 References
 ----------
@@ -64,21 +75,20 @@ from mcp.server.auth.provider import (
 from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
 from pydantic import AnyHttpUrl
 
+from .storage import InMemoryTokenStore, TokenStore
+
 logger = logging.getLogger("pexels_mcp_server.auth")
 
 # How long a freshly issued authorization code stays valid. The MCP spec
 # (and OAuth 2.1) recommend short-lived codes; 5 min matches the SDK example.
 _AUTHORIZATION_CODE_TTL_SECONDS = 300
 
-# Access-token lifetime. The bound Pexels key is dropped when the token
-# expires, so the user has to re-walk /setup. 30 days is the right floor
-# for UX: shorter (e.g. 1 h) means re-pasting the key inside a long
-# conversation; longer than that gives no real benefit because the
-# in-memory token store is wiped on every Koyeb restart (which happens on
-# every deploy and weekly on Dependabot updates anyway), so the effective
-# TTL is min(TTL, time-until-restart). Pexels keys are low-value secrets
-# (free tier, user-regenerable, no financial / PII access), so the longer
-# leak-exposure window of a 30-day token is acceptable for this server.
+# Access-token lifetime. With persistent storage (Redis), this is the true
+# expiry: the token survives Koyeb restarts so the user keeps their session.
+# Without persistence the effective TTL is min(TTL, time-until-restart) but
+# 30 days is still the right ceiling: longer adds leak window for no UX gain.
+# Pexels keys are low-value secrets (free tier, user-regenerable, no
+# financial / PII access), so 30 days is acceptable.
 _ACCESS_TOKEN_TTL_SECONDS = 30 * 24 * 3600
 
 # How long a /setup session stays valid. 15 minutes is generous for a
@@ -116,86 +126,61 @@ class _PendingSetup:
 class PexelsOAuthProvider(
     OAuthAuthorizationServerProvider[AuthorizationCode, RefreshToken, AccessToken]
 ):
-    """In-memory OAuth 2.1 Authorization Server provider with BYOK setup.
+    """OAuth 2.1 Authorization Server provider with BYOK setup.
 
     The provider implements every method ``FastMCP``'s ``create_auth_routes``
     will call: client registration (RFC 7591 DCR), authorization code grant
     with PKCE, code-to-token exchange, token loading, and revocation. Refresh
     tokens are intentionally not supported — clients re-auth on expiry, which
-    keeps the in-memory store bounded and the implementation small.
+    keeps the wire surface small (one less code path the SDK has to handle).
 
     Authorization parks the request in a pending-setup session and redirects
     the user-agent to ``/setup?session=<id>``. Once the user submits their
     Pexels API key the setup handler calls :meth:`complete_setup` to mint
     the authorization code and bind the key to it. The binding then follows
-    the code → token transition on the next ``/token`` exchange.
+    the code → token transition on the next ``/token`` exchange and is
+    written through to the :class:`TokenStore` so it survives restarts.
     """
 
     def __init__(
         self,
         *,
         server_url: str,
-        max_tracked_clients: int = 10_000,
-        max_tracked_tokens: int = 10_000,
+        store: TokenStore | None = None,
         setup_path: str = "/setup",
     ) -> None:
         if not server_url:
             raise ValueError("server_url is required")
         self._server_url = server_url.rstrip("/")
-        self._max_tracked_clients = max_tracked_clients
-        self._max_tracked_tokens = max_tracked_tokens
         self._setup_path = setup_path
+        self._store: TokenStore = store if store is not None else InMemoryTokenStore()
 
-        self._clients: dict[str, OAuthClientInformationFull] = {}
+        # Short-lived state stays in process memory regardless of backend.
         self._auth_codes: dict[str, AuthorizationCode] = {}
-        self._tokens: dict[str, AccessToken] = {}
-        # Pending /setup sessions, keyed by random session id.
         self._pending_setups: dict[str, _PendingSetup] = {}
-        # Pexels API key bound to an authorization code (set by /setup,
-        # consumed during /token exchange to bind the same key to the
-        # resulting access token).
         self._code_to_key: dict[str, str] = {}
-        # Pexels API key bound to an access token. Tool handlers look up
-        # the key by Bearer token on every request.
-        self._token_to_key: dict[str, str] = {}
-        # Last time we swept expired codes + tokens. Sweeps run at most once
-        # every minute so the cost stays O(N) per minute rather than per call.
+        # Last time we swept expired codes + setup sessions. Sweeps run at
+        # most once a minute so the cost stays bounded.
         self._last_sweep_at: float = 0.0
 
     # ------------------------------------------------------------------ DCR
 
     async def get_client(self, client_id: str) -> OAuthClientInformationFull | None:
-        return self._clients.get(client_id)
+        return await self._store.get_client(client_id)
 
     async def register_client(self, client_info: OAuthClientInformationFull) -> None:
         if not client_info.client_id:
             raise ValueError("No client_id provided")
-        # DCR is open (anyone can register), so cap the dict. If we exceed
-        # the cap, drop the oldest half (FIFO via insertion order). Dropped
-        # clients can re-register transparently on their next /authorize.
-        if (
-            client_info.client_id not in self._clients
-            and len(self._clients) >= self._max_tracked_clients
-        ):
-            drop_count = self._max_tracked_clients // 2
-            for stale_id in list(self._clients.keys())[:drop_count]:
-                del self._clients[stale_id]
-            logger.warning(
-                "OAuth client store hit cap (%d), evicted oldest %d entries",
-                self._max_tracked_clients,
-                drop_count,
-            )
-        self._clients[client_info.client_id] = client_info
+        await self._store.set_client(client_info)
         logger.info("Registered OAuth client %s", client_info.client_id)
 
     def _maybe_sweep_expired(self, now: float) -> None:
-        """Drop expired authorization codes, access tokens and setup sessions.
+        """Drop expired authorization codes + setup sessions.
 
-        Runs at most once a minute (covers the 5 min code TTL, the 1 h token
-        TTL and the 15 min setup-session TTL with plenty of margin). Called
-        under no lock — the provider is accessed from a single asyncio event
-        loop, so dict mutation during iteration is safe as long as we
-        materialize the key list first.
+        Access tokens and the bound Pexels keys are not swept here:
+        Redis evicts them on TTL, and the in-memory backend lazily drops
+        them in :meth:`load_access_token` when the caller next reads
+        them. Sweeping every minute would be redundant.
         """
         if now - self._last_sweep_at < 60.0:
             return
@@ -204,27 +189,16 @@ class PexelsOAuthProvider(
         for code in expired_codes:
             del self._auth_codes[code]
             self._code_to_key.pop(code, None)
-        expired_tokens = [
-            token
-            for token, at in self._tokens.items()
-            if at.expires_at is not None and at.expires_at < now
-        ]
-        for token in expired_tokens:
-            del self._tokens[token]
-            self._token_to_key.pop(token, None)
         expired_setups = [sid for sid, p in self._pending_setups.items() if p.expires_at < now]
         for sid in expired_setups:
             del self._pending_setups[sid]
-        if expired_codes or expired_tokens or expired_setups:
+        if expired_codes or expired_setups:
             logger.info(
-                "OAuth sweep: dropped %d expired codes, %d expired tokens, "
-                "%d expired setup sessions "
-                "(remaining: %d codes, %d tokens, %d sessions)",
+                "OAuth sweep: dropped %d expired codes, %d expired setup sessions "
+                "(remaining: %d codes, %d sessions)",
                 len(expired_codes),
-                len(expired_tokens),
                 len(expired_setups),
                 len(self._auth_codes),
-                len(self._tokens),
                 len(self._pending_setups),
             )
 
@@ -310,7 +284,7 @@ class PexelsOAuthProvider(
         )
         return construct_redirect_uri(pending.redirect_uri, code=new_code, state=pending.state)
 
-    def pexels_key_for_token(self, access_token: str) -> str | None:
+    async def pexels_key_for_token(self, access_token: str) -> str | None:
         """Return the Pexels API key bound to a given access token, if any.
 
         Tool handlers look up the caller's Pexels key by the Bearer token
@@ -319,7 +293,7 @@ class PexelsOAuthProvider(
         the token expired — both cases are handled upstream by falling back
         to the ``X-Pexels-Api-Key`` header.
         """
-        return self._token_to_key.get(access_token)
+        return await self._store.get_pexels_key(access_token)
 
     # -------------------------------------------------------------- /token
 
@@ -340,33 +314,21 @@ class PexelsOAuthProvider(
         if not client.client_id:
             raise ValueError("No client_id provided")
 
-        # Bound memory under sustained traffic: cap the token store and evict
-        # the oldest entries when full. Symmetric to ``register_client``'s cap
-        # on ``self._clients``. Any client whose token is evicted re-walks
-        # OAuth on the next call — same UX cost as a server restart.
-        if len(self._tokens) >= self._max_tracked_tokens:
-            drop_count = max(1, self._max_tracked_tokens // 10)
-            for stale_token in list(self._tokens.keys())[:drop_count]:
-                del self._tokens[stale_token]
-                self._token_to_key.pop(stale_token, None)
-            logger.warning(
-                "OAuth token store hit cap (%d), evicted oldest %d entries",
-                self._max_tracked_tokens,
-                drop_count,
-            )
-
         access_token_str = f"mcp_{secrets.token_hex(32)}"
-        self._tokens[access_token_str] = AccessToken(
+        access_token = AccessToken(
             token=access_token_str,
             client_id=client.client_id,
             scopes=authorization_code.scopes,
             expires_at=int(time.time()) + _ACCESS_TOKEN_TTL_SECONDS,
             resource=authorization_code.resource,
         )
+        await self._store.set_access_token(access_token, _ACCESS_TOKEN_TTL_SECONDS)
         # Move the BYOK binding from the consumed code to the issued token.
+        # The Pexels key is encrypted at rest by the Redis store; the
+        # in-memory store keeps it as plain string (process-local).
         bound_key = self._code_to_key.pop(authorization_code.code, None)
         if bound_key is not None:
-            self._token_to_key[access_token_str] = bound_key
+            await self._store.set_pexels_key(access_token_str, bound_key, _ACCESS_TOKEN_TTL_SECONDS)
         del self._auth_codes[authorization_code.code]
 
         return OAuthToken(
@@ -401,16 +363,18 @@ class PexelsOAuthProvider(
     async def load_access_token(self, token: str) -> AccessToken | None:
         now = time.time()
         self._maybe_sweep_expired(now)
-        access_token = self._tokens.get(token)
+        access_token = await self._store.get_access_token(token)
         if access_token is None:
             return None
         if access_token.expires_at is not None and access_token.expires_at < now:
-            del self._tokens[token]
-            self._token_to_key.pop(token, None)
+            # Lazy eviction: the in-memory backend keeps expired tokens
+            # until we ask. Redis would already have evicted them on TTL.
+            await self._store.delete_access_token(token)
+            await self._store.delete_pexels_key(token)
             return None
         return access_token
 
     async def revoke_token(self, token: AccessToken | RefreshToken) -> None:
         if isinstance(token, AccessToken):
-            self._tokens.pop(token.token, None)
-            self._token_to_key.pop(token.token, None)
+            await self._store.delete_access_token(token.token)
+            await self._store.delete_pexels_key(token.token)

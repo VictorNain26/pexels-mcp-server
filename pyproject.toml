@@ -39,6 +39,14 @@ dependencies = [
     "httpx[http2]>=0.27",
     "pydantic>=2.0",
     "uvicorn>=0.30",
+    # Optional persistence backend for the OAuth state (clients + tokens +
+    # bound Pexels keys). When ``REDIS_URL`` is set, the provider stores
+    # state in Redis (Upstash / Redis Cloud / self-hosted) so a server
+    # restart no longer forces every user to re-walk OAuth + re-paste their
+    # Pexels key. The Pexels key is encrypted at rest with Fernet (AES-128-CBC
+    # + HMAC-SHA256) using ``MCP_ENCRYPTION_KEY`` before being stored.
+    "redis>=5.0",
+    "cryptography>=42",
 ]
 
 [project.urls]
@@ -59,6 +67,7 @@ dev = [
     "ruff>=0.6",
     "mypy>=1.10",
     "pip-audit>=2.7",
+    "fakeredis>=2.21",
 ]
 
 [tool.hatch.build.targets.wheel]

@@ -49,8 +49,10 @@ re-explanation into this file or into a code comment.
 - **No outbound URL fetching from tools.** Removing the `pexels_preview_media`
   tool also removed the SSRF surface. Future tools that take URLs MUST
   allowlist hosts at the Pydantic layer; document the threat model.
-- **Imports stay narrow.** `mcp`, `httpx`, `pydantic`, `uvicorn` are the only
-  runtime deps. Anything else needs a justification in the PR.
+- **Imports stay narrow.** `mcp`, `httpx`, `pydantic`, `uvicorn`, `redis`,
+  `cryptography` are the only runtime deps. The last two are gated behind
+  `REDIS_URL` — the import path in `storage.py` is lazy so a stdio install
+  never pays the import cost. Anything new needs a justification in the PR.
 
 ## Day-to-day commands
 

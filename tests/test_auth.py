@@ -201,12 +201,12 @@ async def test_exchange_moves_bound_key_from_code_to_token() -> None:
     issued = await provider.exchange_authorization_code(client, auth_code)
     # The code → key mapping is consumed; the token → key one is populated.
     assert code not in provider._code_to_key
-    assert provider.pexels_key_for_token(issued.access_token) == "user-pexels-key-123"
+    assert await provider.pexels_key_for_token(issued.access_token) == "user-pexels-key-123"
 
 
-def test_pexels_key_for_token_returns_none_for_unknown_token() -> None:
+async def test_pexels_key_for_token_returns_none_for_unknown_token() -> None:
     provider = _make_provider()
-    assert provider.pexels_key_for_token("nope") is None
+    assert await provider.pexels_key_for_token("nope") is None
 
 
 async def test_load_access_token_roundtrip_and_expiry() -> None:
@@ -225,12 +225,18 @@ async def test_load_access_token_roundtrip_and_expiry() -> None:
     assert loaded.resource == SERVER_URL
 
     # Expire it manually and confirm the loader drops it *and* the bound key.
-    expired = provider._tokens[issued.access_token].model_copy(
+    # Reach into the in-memory store to mutate the AccessToken's expires_at
+    # without going through a network round-trip.
+    from pexels_mcp_server.storage import InMemoryTokenStore
+
+    assert isinstance(provider._store, InMemoryTokenStore)
+    in_memory_tokens = provider._store._tokens
+    expired = in_memory_tokens[issued.access_token].model_copy(
         update={"expires_at": int(time.time()) - 1}
     )
-    provider._tokens[issued.access_token] = expired
+    in_memory_tokens[issued.access_token] = expired
     assert (await provider.load_access_token(issued.access_token)) is None
-    assert provider.pexels_key_for_token(issued.access_token) is None
+    assert await provider.pexels_key_for_token(issued.access_token) is None
 
 
 async def test_revoke_token_removes_access_token_and_bound_key() -> None:
@@ -245,11 +251,11 @@ async def test_revoke_token_removes_access_token_and_bound_key() -> None:
     issued = await provider.exchange_authorization_code(client, auth_code)
     loaded = await provider.load_access_token(issued.access_token)
     assert loaded is not None
-    assert provider.pexels_key_for_token(issued.access_token) == "revoke-me-key"
+    assert await provider.pexels_key_for_token(issued.access_token) == "revoke-me-key"
 
     await provider.revoke_token(loaded)
     assert (await provider.load_access_token(issued.access_token)) is None
-    assert provider.pexels_key_for_token(issued.access_token) is None
+    assert await provider.pexels_key_for_token(issued.access_token) is None
 
 
 async def test_token_store_caps_at_max_and_evicts_oldest() -> None:
@@ -259,7 +265,10 @@ async def test_token_store_caps_at_max_and_evicts_oldest() -> None:
     store hits the configured ceiling, the provider evicts the oldest 10 %
     of entries (FIFO) so memory stays bounded on a Nano deployment under
     a flood of fresh OAuth flows."""
-    provider = PexelsOAuthProvider(server_url=SERVER_URL, max_tracked_tokens=10)
+    from pexels_mcp_server.storage import InMemoryTokenStore
+
+    store = InMemoryTokenStore(max_tracked_tokens=10)
+    provider = PexelsOAuthProvider(server_url=SERVER_URL, store=store)
     client = _make_client()
     await provider.register_client(client)
 
@@ -279,7 +288,7 @@ async def test_token_store_caps_at_max_and_evicts_oldest() -> None:
     assert (await provider.load_access_token(issued_tokens[0])) is None
     assert (await provider.load_access_token(issued_tokens[-1])) is not None
     # The bound Pexels key for the evicted token is also gone.
-    assert provider.pexels_key_for_token(issued_tokens[0]) is None
+    assert await provider.pexels_key_for_token(issued_tokens[0]) is None
 
 
 async def test_refresh_tokens_unsupported() -> None:

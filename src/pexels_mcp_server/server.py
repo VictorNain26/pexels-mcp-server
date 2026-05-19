@@ -55,6 +55,7 @@ from .schemas import (
     VideoSize,
     parse_aspect_ratio,
 )
+from .storage import build_token_store
 from .transport import pexels_key_ctx
 
 logger = logging.getLogger("pexels_mcp_server.server")
@@ -78,11 +79,13 @@ class AppContext:
 
 @asynccontextmanager
 async def _lifespan(_server: FastMCP) -> AsyncIterator[AppContext]:
-    """Boot one PexelsClient for the server lifetime.
+    """Boot one PexelsClient for the server lifetime + cleanup the auth store.
 
     The client never stores a Pexels key. The effective key per call is
     resolved via ``_resolve_api_key`` (BYOK via OAuth setup → per-request
-    header → env var in stdio).
+    header → env var in stdio). The OAuth provider's persistence backend
+    (Redis or in-memory) is also closed on shutdown so the Redis
+    connection pool drains gracefully during a rolling deploy.
     """
     client = PexelsClient()
     logger.info("Pexels client ready.")
@@ -90,15 +93,18 @@ async def _lifespan(_server: FastMCP) -> AsyncIterator[AppContext]:
         yield AppContext(client=client)
     finally:
         await client.aclose()
+        if oauth_provider is not None:
+            await oauth_provider._store.aclose()
         logger.info("Pexels client closed.")
 
 
-def _resolve_api_key(ctx: Context) -> str | None:  # type: ignore[type-arg]
+async def _resolve_api_key(ctx: Context) -> str | None:  # type: ignore[type-arg]
     """Resolve the Pexels API key for the current call.
 
     Priority:
       1. Pexels key bound to the request's Bearer access token (BYOK
-         via /setup form).
+         via /setup form). With the Redis backend this survives server
+         restarts; with the in-memory backend it is wiped on restart.
       2. ``X-Pexels-Api-Key`` request header (read once by the ASGI
          middleware into ``pexels_key_ctx``).
       3. ``PEXELS_API_KEY`` env var (stdio transport only).
@@ -109,7 +115,7 @@ def _resolve_api_key(ctx: Context) -> str | None:  # type: ignore[type-arg]
         if headers is not None:
             auth_header = str(headers.get("authorization", "")).strip()
             if auth_header.lower().startswith("bearer "):
-                bound = oauth_provider.pexels_key_for_token(auth_header[7:].strip())
+                bound = await oauth_provider.pexels_key_for_token(auth_header[7:].strip())
                 if bound:
                     return bound
 
@@ -124,7 +130,14 @@ def _resolve_api_key(ctx: Context) -> str | None:  # type: ignore[type-arg]
 
 
 def _build_oauth_settings() -> tuple[PexelsOAuthProvider, AuthSettings] | None:
-    """Resolve OAuth wiring from the environment (HTTP mode only)."""
+    """Resolve OAuth wiring from the environment (HTTP mode only).
+
+    Picks the persistence backend based on ``REDIS_URL``: present →
+    :class:`RedisTokenStore` (state survives restarts); absent →
+    :class:`InMemoryTokenStore` (state wiped on restart). With Redis,
+    ``MCP_ENCRYPTION_KEY`` is required so the Pexels API key can be
+    encrypted at rest.
+    """
     transport = os.environ.get("TRANSPORT", "stdio").strip().lower()
     if transport != "streamable-http":
         return None
@@ -135,7 +148,11 @@ def _build_oauth_settings() -> tuple[PexelsOAuthProvider, AuthSettings] | None:
             "Set it to the public HTTPS URL of this service, or switch to "
             "TRANSPORT=stdio for local use."
         )
-    provider = PexelsOAuthProvider(server_url=server_url)
+    store = build_token_store(
+        redis_url=os.environ.get("REDIS_URL", "").strip() or None,
+        encryption_key=os.environ.get("MCP_ENCRYPTION_KEY", "").strip() or None,
+    )
+    provider = PexelsOAuthProvider(server_url=server_url, store=store)
     server_url_obj = AnyHttpUrl(server_url)
     auth = AuthSettings(
         issuer_url=server_url_obj,
@@ -429,7 +446,7 @@ async def pexels_search_photos(
     except ValidationError as exc:
         _raise_invalid_params(exc)
     payload, _ = await _client(ctx).search_photos(
-        api_key=_resolve_api_key(ctx),
+        api_key=await _resolve_api_key(ctx),
         query=params.query,
         orientation=params.orientation.value if params.orientation else None,
         size=params.size.value if params.size else None,
@@ -466,7 +483,7 @@ async def pexels_get_photo(
         params = GetPhotoParams(photo_id=photo_id)
     except ValidationError as exc:
         _raise_invalid_params(exc)
-    payload, _ = await _client(ctx).get_photo(params.photo_id, api_key=_resolve_api_key(ctx))
+    payload, _ = await _client(ctx).get_photo(params.photo_id, api_key=await _resolve_api_key(ctx))
     return format_single_photo(payload)
 
 
@@ -517,7 +534,7 @@ async def pexels_search_videos(
     except ValidationError as exc:
         _raise_invalid_params(exc)
     payload, _ = await _client(ctx).search_videos(
-        api_key=_resolve_api_key(ctx),
+        api_key=await _resolve_api_key(ctx),
         query=params.query,
         orientation=params.orientation.value if params.orientation else None,
         size=params.size.value if params.size else None,
@@ -553,7 +570,7 @@ async def pexels_get_video(
         params = GetVideoParams(video_id=video_id)
     except ValidationError as exc:
         _raise_invalid_params(exc)
-    payload, _ = await _client(ctx).get_video(params.video_id, api_key=_resolve_api_key(ctx))
+    payload, _ = await _client(ctx).get_video(params.video_id, api_key=await _resolve_api_key(ctx))
     return format_single_video(payload)
 
 
@@ -601,7 +618,7 @@ async def pexels_get_collection_media(
     except ValidationError as exc:
         _raise_invalid_params(exc)
     payload, _ = await _client(ctx).get_collection_media(
-        api_key=_resolve_api_key(ctx),
+        api_key=await _resolve_api_key(ctx),
         collection_id=params.collection_id,
         type=params.type.value if params.type else None,
         sort=params.sort.value if params.sort else None,
