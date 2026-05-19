@@ -162,15 +162,22 @@ def main() -> None:
         host,
         port,
     )
-    # Graceful shutdown: give in-flight tool calls 8s to finish before SIGKILL.
-    # Koyeb waits ~10s after SIGTERM, so 8s leaves a 2s buffer.
+    # Graceful shutdown: give in-flight tool calls 25s to finish before
+    # SIGKILL. Sized for Koyeb, which sends SIGTERM and waits ~30s by default
+    # before the kill — 25s leaves a 5s buffer for uvicorn's own teardown. On
+    # Fly.io the default SIGTERM grace is only 5s, so 25s exceeds the window
+    # unless you raise `graceful_shutdown_timeout` in fly.toml; uvicorn just
+    # gets killed mid-shutdown otherwise, which is no worse than the old
+    # 8s default. A Pexels search round-trip is typically under 1s so 25s is
+    # generous; lowering it just risks dropping in-flight requests during a
+    # rolling deploy on platforms with a longer SIGTERM window.
     uvicorn.run(
         app,
         host=host,
         port=port,
         log_config=None,
         access_log=False,
-        timeout_graceful_shutdown=8,
+        timeout_graceful_shutdown=25,
     )
 
 

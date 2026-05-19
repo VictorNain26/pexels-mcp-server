@@ -16,5 +16,7 @@ __pycache__
 .editorconfig
 CHANGELOG.md
 CONTRIBUTING.md
+CLAUDE.md
+PRIVACY.md
 docs
 tests

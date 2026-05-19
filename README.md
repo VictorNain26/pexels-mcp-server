@@ -100,16 +100,96 @@ The hosted deployment **does not hold a default Pexels API key**. Every caller i
 
 Both `GET /healthz` (liveness) and `GET /readyz` (readiness) return `200 ok` and bypass auth, so platform probes don't trigger 401 noise. The `Dockerfile` declares a `HEALTHCHECK` against `/healthz`. Wire `/readyz` to the platform's "ready for traffic" gate; today both paths behave the same but `/readyz` is reserved for future deeper checks (Pexels reachability, key validity).
 
-### Koyeb (or any container platform)
+### Koyeb deployment guide
 
-The repo ships a multi-stage `Dockerfile` (Python 3.12 slim, runs as the `app` user, ~80 MB). On Koyeb:
+The repo ships a multi-stage `Dockerfile` (Python 3.12 slim, runs as the `app` user, ~80 MB image, `HEALTHCHECK` on `/healthz`, graceful shutdown with a 25 s window — well under Koyeb's 30 s SIGTERM grace period).
 
-1. Create an app pointing at this GitHub repo (Dockerfile builder).
-2. Add the env vars above (`PEXELS_API_KEY`, `MCP_AUTH_TOKEN`, `TRANSPORT=streamable-http`).
-3. Expose port `8000` over HTTPS. Koyeb terminates TLS for you.
-4. Use the public URL `https://<your-app>.koyeb.app/mcp` as the connector endpoint in claude.ai, with the Bearer token in the `Authorization` header.
+#### 1. Generate the Bearer token
 
-Local dry-run:
+```bash
+openssl rand -hex 32
+```
+
+Keep it. You'll need it on the Koyeb side (as `MCP_AUTH_TOKEN`) and on the claude.ai connector side (as `Authorization: Bearer <token>`).
+
+#### 2. Create the Koyeb service
+
+Dashboard route (fastest):
+
+1. **Create Service** → **GitHub** source → select this repository, branch `main`.
+2. **Builder**: Dockerfile (Koyeb auto-detects).
+3. **Instance**: `Nano` is enough (this server is I/O-bound, a few MB of RAM per request).
+4. **Region**: pick the one closest to your callers (e.g. `fra` for EU, `was` for US East).
+5. **Ports**:
+   - Port `8000`, protocol `HTTP`, route `/`.
+6. **Health checks**:
+   - **HTTP** probe on path `/healthz`, port `8000`. Use HTTP, not the default TCP — TCP just confirms the socket is open, HTTP confirms the app booted. Grace period: 5 s, interval: 30 s.
+7. **Environment variables** (all plain text except the secrets):
+
+   | Key | Value | Notes |
+   |---|---|---|
+   | `TRANSPORT` | `streamable-http` | Required to switch off stdio mode. |
+   | `MCP_AUTH_TOKEN` | `<paste the openssl output>` | Mark as **Secret**. |
+   | `MCP_ALLOWED_HOSTS` | `{{ KOYEB_PUBLIC_DOMAIN }}` | Re-enables Origin/Host validation per MCP spec 2025-06-18. Koyeb substitutes its public domain at runtime. |
+   | `LOG_FORMAT` | `json` | One-line-per-record for the Koyeb log drain. |
+   | `LOG_LEVEL` | `INFO` | Bump to `DEBUG` only while diagnosing. |
+
+   Do **not** set `PEXELS_API_KEY` on the server in a multi-tenant deployment — each caller sends their own `X-Pexels-Api-Key` header and pays their own quota.
+
+8. Deploy. Wait for the health check to flip green. The public URL is `https://<service-name>-<org-slug>.koyeb.app`.
+
+CLI route (reproducible, scriptable):
+
+```bash
+koyeb service create pexels-mcp \
+  --app pexels-mcp \
+  --git github.com/VictorNain26/pexels-mcp-server \
+  --git-branch main \
+  --git-builder docker \
+  --ports 8000:http \
+  --routes /:8000 \
+  --checks 8000:http:/healthz \
+  --env TRANSPORT=streamable-http \
+  --env "MCP_ALLOWED_HOSTS={{ KOYEB_PUBLIC_DOMAIN }}" \
+  --env LOG_FORMAT=json \
+  --env "MCP_AUTH_TOKEN=@mcp-auth-token" \
+  --instance-type nano \
+  --regions fra
+```
+
+Create the `mcp-auth-token` secret first with `koyeb secret create mcp-auth-token --value <hex>`. The `@secret-name` syntax injects it as an env var without exposing it in the service definition.
+
+#### 3. Smoke test the public endpoint
+
+```bash
+# Public URL Koyeb gave you
+URL=https://<your-service>.koyeb.app
+TOKEN=<the bearer token>
+PEXELS=<your Pexels key>
+
+curl -s "$URL/healthz"   # → ok
+
+curl -s -H "Authorization: Bearer $TOKEN" \
+     -H "X-Pexels-Api-Key: $PEXELS" \
+     -H 'Content-Type: application/json' \
+     -H 'Accept: application/json,text/event-stream' \
+     -H 'MCP-Protocol-Version: 2025-06-18' \
+     -X POST "$URL/mcp" \
+     -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"smoke","version":"0"}}}'
+```
+
+The `initialize` call should return a JSON envelope with `result.serverInfo.name = "pexels-mcp-server"`. If you get `401`, the Bearer token is wrong. If you get the Pexels auth error, `X-Pexels-Api-Key` is missing or invalid.
+
+#### 4. Wire it into claude.ai
+
+1. claude.ai → **Settings → Connectors → Add custom connector**.
+2. URL: `https://<your-service>.koyeb.app/mcp`.
+3. Authentication → **Custom headers**:
+   - `Authorization: Bearer <MCP_AUTH_TOKEN>`
+   - `X-Pexels-Api-Key: <your Pexels key>`
+4. Save, enable in a conversation, prompt: « find me three landscape photos of Paris on Pexels ».
+
+#### Local dry-run (before deploying)
 
 ```bash
 MCP_AUTH_TOKEN=test123 TRANSPORT=streamable-http HOST=0.0.0.0 \
@@ -120,8 +200,9 @@ curl -s -H 'Authorization: Bearer test123' \
      -H 'X-Pexels-Api-Key: your_pexels_key' \
      -H 'Content-Type: application/json' \
      -H 'Accept: application/json,text/event-stream' \
+     -H 'MCP-Protocol-Version: 2025-06-18' \
      -X POST http://localhost:8000/mcp \
-     -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"smoke","version":"0"}}}'
+     -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"smoke","version":"0"}}}'
 ```
 
 ## How a response looks
