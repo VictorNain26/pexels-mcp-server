@@ -1,15 +1,15 @@
 """Unit tests for the embedded OAuth Authorization Server provider.
 
-The provider runs in **auto-approve** mode: the ``authorize`` method issues
-an authorization code immediately and returns the client redirect URI with
-``code`` and ``state`` appended. There is no human consent step — the real
-authentication of every tool call is the caller's ``X-Pexels-Api-Key``
-header (orthogonal to the OAuth flow). These tests cover every method the
-SDK's ``create_auth_routes`` will invoke.
+The provider runs in **BYOK setup** mode: the ``authorize`` method parks
+the request and redirects the user-agent to ``/setup?session=<id>``.
+``complete_setup`` then mints the authorization code with the user's
+Pexels API key bound to it. ``exchange_authorization_code`` moves that
+binding to the issued access token. These tests cover every method the
+SDK's ``create_auth_routes`` will invoke plus the BYOK helpers.
 
 The full HTTP integration (FastMCP wiring, ``WWW-Authenticate``,
-``/.well-known`` endpoints) is exercised through ``mcp.streamable_http_app()``
-in ``test_server_config.py``; this file stays unit-level so failures point
+``/.well-known`` endpoints, ``/setup`` route handlers) is exercised in
+``test_server_http.py``; this file stays unit-level so failures point
 at the provider implementation rather than the SDK plumbing.
 """
 
@@ -55,6 +55,24 @@ def _parse_redirect(url: str) -> dict[str, list[str]]:
     return parse_qs(urlparse(url).query)
 
 
+async def _walk_to_client_redirect(
+    provider: PexelsOAuthProvider,
+    client: OAuthClientInformationFull,
+    *,
+    state: str | None = "state-abc",
+    pexels_key: str = "test-pexels-key",
+) -> str:
+    """Drive authorize → complete_setup to obtain the client redirect URL.
+
+    Mirrors what the /setup HTTP handler does in production. Keeps the
+    individual tests focused on the assertion they care about rather than
+    duplicating the two-step ceremony each time.
+    """
+    setup_url = await provider.authorize(client, _make_params(state=state))
+    session_id = _parse_redirect(setup_url)["session"][0]
+    return provider.complete_setup(session_id, pexels_key)
+
+
 def test_constructor_rejects_empty_server_url() -> None:
     with pytest.raises(ValueError, match="server_url"):
         PexelsOAuthProvider(server_url="")
@@ -75,50 +93,86 @@ async def test_register_client_rejects_missing_id() -> None:
         await provider.register_client(bad_client)
 
 
-async def test_authorize_issues_code_and_redirects_to_client() -> None:
+async def test_authorize_parks_request_and_redirects_to_setup() -> None:
     provider = _make_provider()
     client = _make_client()
     await provider.register_client(client)
 
     url = await provider.authorize(client, _make_params(state="s-1"))
 
-    # The redirect goes straight to the client (no /login step).
-    assert url.startswith(CLIENT_REDIRECT)
-    params = _parse_redirect(url)
-    assert params["state"] == ["s-1"]
-    code = params["code"][0]
-    assert code.startswith("mcp_")
-    # The code is recorded for later /token exchange.
-    assert code in provider._auth_codes
+    # /authorize no longer redirects to the client — it redirects the
+    # user-agent to the BYOK setup form first.
+    assert url.startswith(f"{SERVER_URL}/setup")
+    session_id = _parse_redirect(url)["session"][0]
+    assert len(session_id) >= 20
+    # The pending session is retrievable and carries the parked params.
+    pending = provider.pending_setup(session_id)
+    assert pending is not None
+    assert pending.client_id == client.client_id
+    assert pending.code_challenge == "dummy-challenge"
+    assert pending.state == "s-1"
 
 
 async def test_authorize_generates_state_when_client_omits_it() -> None:
     provider = _make_provider()
     client = _make_client()
-    url = await provider.authorize(client, _make_params(state=None))
-    params = _parse_redirect(url)
-    assert "state" in params
-    assert len(params["state"][0]) >= 16
+    setup_url = await provider.authorize(client, _make_params(state=None))
+    session_id = _parse_redirect(setup_url)["session"][0]
+    pending = provider.pending_setup(session_id)
+    assert pending is not None
+    assert len(pending.state) >= 16
 
 
-async def test_authorize_preserves_pkce_and_resource_indicator() -> None:
-    """RFC 8707 audience + PKCE challenge must survive into the stored code."""
+async def test_complete_setup_issues_code_and_binds_key() -> None:
+    """RFC 8707 audience + PKCE challenge must survive into the stored code,
+    and the BYOK key must be bound to the freshly minted code."""
     provider = _make_provider()
     client = _make_client()
-    url = await provider.authorize(client, _make_params(state="s-pkce"))
-    code = _parse_redirect(url)["code"][0]
+    setup_url = await provider.authorize(client, _make_params(state="s-pkce"))
+    session_id = _parse_redirect(setup_url)["session"][0]
+
+    redirect = provider.complete_setup(session_id, "my-pexels-key")
+    assert redirect.startswith(CLIENT_REDIRECT)
+    params = _parse_redirect(redirect)
+    assert params["state"] == ["s-pkce"]
+    code = params["code"][0]
+    assert code.startswith("mcp_")
+
     stored = provider._auth_codes[code]
     assert stored.code_challenge == "dummy-challenge"
     assert stored.resource == SERVER_URL
     assert stored.scopes == [MCP_SCOPE]
+    # Key is bound to the code, waiting for the /token exchange to move it
+    # over to the issued access token.
+    assert provider._code_to_key[code] == "my-pexels-key"
+    # Session is consumed (single-use).
+    assert provider.pending_setup(session_id) is None
+
+
+def test_complete_setup_rejects_unknown_session() -> None:
+    provider = _make_provider()
+    with pytest.raises(LookupError, match="not found"):
+        provider.complete_setup("does-not-exist", "any-key")
+
+
+async def test_complete_setup_rejects_expired_session() -> None:
+    provider = _make_provider()
+    client = _make_client()
+    setup_url = await provider.authorize(client, _make_params(state="s-exp"))
+    session_id = _parse_redirect(setup_url)["session"][0]
+
+    # Force-expire the pending session.
+    provider._pending_setups[session_id].expires_at = time.time() - 1
+    with pytest.raises(LookupError):
+        provider.complete_setup(session_id, "any-key")
 
 
 async def test_authorization_code_exchange_yields_bearer_token() -> None:
     provider = _make_provider()
     client = _make_client()
     await provider.register_client(client)
-    url = await provider.authorize(client, _make_params(state="s-2"))
-    code = _parse_redirect(url)["code"][0]
+    redirect = await _walk_to_client_redirect(provider, client, state="s-2")
+    code = _parse_redirect(redirect)["code"][0]
 
     auth_code = await provider.load_authorization_code(client, code)
     assert auth_code is not None
@@ -133,11 +187,33 @@ async def test_authorization_code_exchange_yields_bearer_token() -> None:
     assert (await provider.load_authorization_code(client, code)) is None
 
 
+async def test_exchange_moves_bound_key_from_code_to_token() -> None:
+    """The Pexels key submitted in /setup must follow code → token so tool
+    handlers can read it back via pexels_key_for_token()."""
+    provider = _make_provider()
+    client = _make_client()
+    redirect = await _walk_to_client_redirect(
+        provider, client, state="s-bind", pexels_key="user-pexels-key-123"
+    )
+    code = _parse_redirect(redirect)["code"][0]
+    auth_code = await provider.load_authorization_code(client, code)
+    assert auth_code is not None
+    issued = await provider.exchange_authorization_code(client, auth_code)
+    # The code → key mapping is consumed; the token → key one is populated.
+    assert code not in provider._code_to_key
+    assert provider.pexels_key_for_token(issued.access_token) == "user-pexels-key-123"
+
+
+def test_pexels_key_for_token_returns_none_for_unknown_token() -> None:
+    provider = _make_provider()
+    assert provider.pexels_key_for_token("nope") is None
+
+
 async def test_load_access_token_roundtrip_and_expiry() -> None:
     provider = _make_provider()
     client = _make_client()
-    url = await provider.authorize(client, _make_params(state="s-3"))
-    code = _parse_redirect(url)["code"][0]
+    redirect = await _walk_to_client_redirect(provider, client, state="s-3")
+    code = _parse_redirect(redirect)["code"][0]
     auth_code = await provider.load_authorization_code(client, code)
     assert auth_code is not None
     issued = await provider.exchange_authorization_code(client, auth_code)
@@ -148,27 +224,32 @@ async def test_load_access_token_roundtrip_and_expiry() -> None:
     assert loaded.scopes == [MCP_SCOPE]
     assert loaded.resource == SERVER_URL
 
-    # Expire it manually and confirm the loader drops it.
+    # Expire it manually and confirm the loader drops it *and* the bound key.
     expired = provider._tokens[issued.access_token].model_copy(
         update={"expires_at": int(time.time()) - 1}
     )
     provider._tokens[issued.access_token] = expired
     assert (await provider.load_access_token(issued.access_token)) is None
+    assert provider.pexels_key_for_token(issued.access_token) is None
 
 
-async def test_revoke_token_removes_access_token() -> None:
+async def test_revoke_token_removes_access_token_and_bound_key() -> None:
     provider = _make_provider()
     client = _make_client()
-    url = await provider.authorize(client, _make_params(state="s-4"))
-    code = _parse_redirect(url)["code"][0]
+    redirect = await _walk_to_client_redirect(
+        provider, client, state="s-4", pexels_key="revoke-me-key"
+    )
+    code = _parse_redirect(redirect)["code"][0]
     auth_code = await provider.load_authorization_code(client, code)
     assert auth_code is not None
     issued = await provider.exchange_authorization_code(client, auth_code)
     loaded = await provider.load_access_token(issued.access_token)
     assert loaded is not None
+    assert provider.pexels_key_for_token(issued.access_token) == "revoke-me-key"
 
     await provider.revoke_token(loaded)
     assert (await provider.load_access_token(issued.access_token)) is None
+    assert provider.pexels_key_for_token(issued.access_token) is None
 
 
 async def test_refresh_tokens_unsupported() -> None:

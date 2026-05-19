@@ -55,8 +55,10 @@ dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
     "pytest-httpx>=0.30",
+    "pytest-cov>=5.0",
     "ruff>=0.6",
     "mypy>=1.10",
+    "pip-audit>=2.7",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -123,3 +125,22 @@ filterwarnings = [
     "error",
     "ignore::DeprecationWarning:pydantic.*",
 ]
+
+[tool.coverage.run]
+source = ["src/pexels_mcp_server"]
+branch = true
+omit = [
+    # CLI bootstrap is exercised end-to-end by the docker-build smoke test
+    # in CI (boot-refusal + boot-success paths). Unit-testing it would
+    # require mocking uvicorn.run() — low value for the line count.
+    "src/pexels_mcp_server/__main__.py",
+]
+
+[tool.coverage.report]
+exclude_also = [
+    "raise NotImplementedError",
+    "if TYPE_CHECKING:",
+    "if __name__ == .__main__.:",
+]
+skip_covered = false
+show_missing = true

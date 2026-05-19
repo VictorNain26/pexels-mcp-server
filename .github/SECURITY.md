@@ -27,10 +27,11 @@ You will get an acknowledgement within 72 hours. Fixes for confirmed issues are 
 
 ## Threat model notes
 
-This server holds a `PEXELS_API_KEY` in the process environment and forwards search/lookup requests to `api.pexels.com`. Specifically be aware of:
+This server forwards search/lookup requests to `api.pexels.com` using a Pexels API key supplied by the caller. The server itself does not hold a shared Pexels key in production. Specifically be aware of:
 
-- **Stdio transport.** Anything that can spawn the server inherits the configured environment, including `PEXELS_API_KEY`. Treat the key like any other deployment secret.
-- **Streamable HTTP transport.** The HTTP endpoint speaks raw MCP. Put it behind authentication (Bearer header, mTLS, your platform's auth) before exposing it publicly, otherwise anyone hitting `/mcp` consumes your Pexels quota.
-- **Preview tool.** `pexels_preview_media` only accepts URLs whose host is `images.pexels.com`. SSRF attempts against internal hosts are rejected at validation time. If you find a bypass, report it.
+- **Stdio transport.** Anything that can spawn the server inherits the configured environment, including `PEXELS_API_KEY` if the operator sets it. Treat the key like any other deployment secret. Stdio is a local-only transport — exposing it over a network is out of scope.
+- **Streamable HTTP transport.** The HTTP endpoint is OAuth 2.1-protected (RFC 9728 + RFC 8414 + RFC 7591 DCR + PKCE, served by the MCP Python SDK). Anonymous requests to `/mcp` return 401 with a spec-compliant `WWW-Authenticate` header. Each caller supplies their own Pexels API key during the OAuth setup step (bound to their access token) or as an `X-Pexels-Api-Key` header per request, so the server never holds a shared key and an attacker cannot drain anyone else's Pexels quota.
+- **Rate limiting.** The middleware applies a per-source-IP cap (default 60 req/min, tunable via `MCP_RATE_LIMIT_PER_MINUTE`). The real client IP is read from `X-Forwarded-For` using a configurable trusted-proxy hop count (`MCP_TRUSTED_PROXY_HOPS`, default 1 for Koyeb's LB) so a client cannot spoof the IP by injecting a leftmost entry. Health probes and `.well-known/oauth-*` endpoints are exempt.
+- **DNS rebinding protection.** Auto-enabled in HTTP mode: the hostname of `MCP_SERVER_URL` is added to the allowed-hosts list. Extend with `MCP_ALLOWED_HOSTS` if you front the service with multiple hosts.
 
-Out of scope: anything that requires already-compromised credentials, social-engineering an operator into setting an attacker-controlled `PEXELS_API_KEY`, or attacks on third-party MCP clients.
+Out of scope: anything that requires already-compromised credentials, social-engineering an operator into setting an attacker-controlled `PEXELS_API_KEY` in a stdio deployment, or attacks on third-party MCP clients.

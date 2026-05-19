@@ -46,8 +46,41 @@ jobs:
       - name: Type check
         run: uv run mypy src
 
-      - name: Run tests
-        run: uv run pytest -q
+      - name: Run tests with coverage
+        # Threshold tracks the floor under which a regression should fail
+        # CI. Ratchet it up by hand after each meaningful coverage gain.
+        run: uv run pytest -q --cov=src/pexels_mcp_server --cov-report=term-missing --cov-fail-under=75
+
+  security-audit:
+    # Dependency CVE scan. Runs alongside the unit-test matrix so a freshly
+    # disclosed vulnerability in mcp / httpx / pydantic / uvicorn fails CI
+    # on the next push instead of waiting for Dependabot's weekly cadence.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync --all-extras
+
+      - name: Export locked requirements
+        # pip-audit cannot audit the editable local project ("pexels-mcp"),
+        # so we export the third-party deps to a requirements file and
+        # audit only that. --no-emit-project skips the project itself;
+        # --no-editable strips the editable marker; --disable-pip on
+        # pip-audit keeps the audit fully offline-friendly.
+        run: uv export --format requirements-txt --no-emit-project --no-editable --no-header -o audit-requirements.txt
+
+      - name: Run pip-audit on the locked dependency set
+        run: uv run pip-audit --strict -r audit-requirements.txt --disable-pip
 
   docker-build:
     # Validate the Dockerfile builds end-to-end. Catches Dockerfile regressions

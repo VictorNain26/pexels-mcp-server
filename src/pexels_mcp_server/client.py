@@ -356,3 +356,25 @@ class PexelsClient:
             },
             api_key=self._require_key(api_key),
         )
+
+    async def validate_key(self, api_key: str) -> bool:
+        """Probe ``GET /v1/curated`` with ``api_key`` to confirm it works.
+
+        Used by the /setup form to give immediate feedback when the user
+        pastes a wrong or expired key. The endpoint is the cheapest
+        authenticated Pexels endpoint (no required query params, returns
+        a single curated photo when called with ``per_page=1``).
+
+        Returns ``True`` on HTTP 200, ``False`` on 401/403, and raises
+        :class:`PexelsAPIError` on anything else (network failure, 5xx) so
+        the caller can distinguish "key is bad" from "Pexels is down".
+        """
+        try:
+            await self._request(
+                f"{PHOTOS_PREFIX}/curated",
+                {"per_page": 1},
+                api_key=self._require_key(api_key),
+            )
+        except PexelsAuthError:
+            return False
+        return True

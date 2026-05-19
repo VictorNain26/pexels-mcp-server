@@ -14,30 +14,37 @@ the server receives, for the duration of a single request:
 
 - The **tool arguments** sent by the agent (search query, photo or video id,
   pagination, filters, locale, etc.).
-- The caller's **Pexels API key**, either from the `X-Pexels-Api-Key` HTTP
-  header (Streamable HTTP transport) or from the `PEXELS_API_KEY` environment
-  variable on the host process (stdio transport).
-- A **shared Bearer token** in the `Authorization` header when
-  `MCP_AUTH_TOKEN` is set on the host (Streamable HTTP transport only).
-- For the `pexels_preview_media` tool, the **thumbnail URLs** the agent
-  asks to be fetched. URLs are validated to be on `images.pexels.com` before
-  any network call.
+- The caller's **Pexels API key**, either submitted once during the OAuth
+  setup step and bound server-side to the issued access token, or sent
+  per-request as an `X-Pexels-Api-Key` HTTP header (Streamable HTTP
+  transport), or read from the `PEXELS_API_KEY` environment variable
+  (stdio transport only).
+- The **Bearer access token** issued by the server's own `/token` endpoint
+  (Streamable HTTP transport). The token is an opaque random string held
+  in process memory; it is not a user identity, only a proof that the
+  client walked through the spec-mandated OAuth handshake.
 
 The server forwards the search/lookup parameters and the caller's Pexels API
-key to `https://api.pexels.com` and fetches thumbnails from
-`https://images.pexels.com`. The Pexels response is then projected into a
-token-lean JSON envelope and returned to the MCP client.
+key to `https://api.pexels.com`. The Pexels response is then projected into
+a token-lean JSON envelope and returned to the MCP client.
 
 ## 2. What the server stores
 
-**Nothing.** The server is stateless:
+**Nothing on disk.** The server has no database, no on-disk cache, no
+session store:
 
-- No database, no on-disk cache, no session store.
-- The Pexels API key is read from the request scope on every call and never
-  persisted. There is no key store, no per-user key vault, no log entry that
-  contains the key.
-- The Bearer token (`MCP_AUTH_TOKEN`) is read from the host environment once
-  at boot, kept in process memory only, and never logged.
+- No file or database holds user-supplied data across restarts. A process
+  restart drops every Bearer token, every authorization code, every
+  registered OAuth client, and every bound Pexels key — clients re-auth
+  transparently on the next call.
+- The Pexels API key, when supplied via the OAuth setup step, lives in
+  process memory bound to the access token for the token's 1-hour lifetime
+  and is then released. When supplied via the `X-Pexels-Api-Key` header it
+  is read from the request scope on every call and never retained beyond
+  the request. There is no per-user key vault, no log entry that contains
+  the key.
+- Bearer tokens issued by `/token` live in process memory only, expire after
+  1 hour, and are never logged.
 - Tool arguments and Pexels responses live in process memory for the
   duration of a single request and are then released.
 
@@ -78,8 +85,6 @@ The server makes outbound HTTPS calls to:
 - `api.pexels.com` — the Pexels REST API, with the caller's Pexels API key
   in the `Authorization` header. Pexels' privacy practices are governed by
   the [Pexels Privacy Policy](https://www.pexels.com/privacy-policy/).
-- `images.pexels.com` — to fetch thumbnails for the `pexels_preview_media`
-  tool. No credentials are forwarded; this host is treated as a CDN.
 
 No other outbound calls are made. There is no telemetry beacon, no analytics
 SDK, no metrics endpoint, no remote configuration fetch.
