@@ -95,9 +95,9 @@ The hosted deployment **does not hold a default Pexels API key**. Every caller i
 | `LOG_LEVEL` | no | Default `INFO`. |
 | `PEXELS_API_KEY` | no | Server-side fallback key for callers who omit the `X-Pexels-Api-Key` header. Leave unset for multi-tenant deployments. |
 
-### Health probe
+### Health and readiness probes
 
-A `GET /healthz` route returns `200 ok` and bypasses auth, so platform liveness probes don't trigger 401 noise. The `Dockerfile` declares a `HEALTHCHECK` against it.
+Both `GET /healthz` (liveness) and `GET /readyz` (readiness) return `200 ok` and bypass auth, so platform probes don't trigger 401 noise. The `Dockerfile` declares a `HEALTHCHECK` against `/healthz`. Wire `/readyz` to the platform's "ready for traffic" gate; today both paths behave the same but `/readyz` is reserved for future deeper checks (Pexels reachability, key validity).
 
 ### Koyeb (or any container platform)
 
