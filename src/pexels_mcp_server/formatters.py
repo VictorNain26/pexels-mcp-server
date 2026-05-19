@@ -76,22 +76,14 @@ class _PhotoListRequired(_SearchListBase):
 
 
 class PhotoListResult(_PhotoListRequired, total=False):
-    """``pexels_search_photos`` return envelope.
+    """``pexels_search_photos`` return envelope. Optional fields are only
+    emitted when the upstream payload carries them (``total_results``,
+    ``next_page``) or the post-hoc filter wiped the page
+    (``filter_diagnostics``)."""
 
-    Optional fields are typed ``T | None`` (not just ``T``) because the
-    MCP SDK 1.27 dumps the result with ``model_dump(mode="json")`` without
-    ``exclude_unset=True``: optional TypedDict fields with a Pydantic
-    default of ``None`` end up as ``"field": null`` in
-    ``structuredContent`` even when the tool never set them. The strict
-    JSON-Schema generated from a non-nullable ``int`` / ``FilterDiagnostics``
-    annotation rejects ``null`` (``"None is not of type 'object'"`` for
-    nested TypedDicts) and the call fails with an output validation
-    error. ``T | None`` produces an ``anyOf`` schema that accepts both
-    branches, so the bogus ``null`` injected by the SDK validates."""
-
-    total_results: int | None
-    next_page: int | None
-    filter_diagnostics: FilterDiagnostics | None
+    total_results: int
+    next_page: int
+    filter_diagnostics: FilterDiagnostics
 
 
 class _VideoListRequired(_SearchListBase):
@@ -99,12 +91,11 @@ class _VideoListRequired(_SearchListBase):
 
 
 class VideoListResult(_VideoListRequired, total=False):
-    """``pexels_search_videos`` return envelope. See :class:`PhotoListResult`
-    for why optional fields are explicitly ``T | None``."""
+    """``pexels_search_videos`` return envelope."""
 
-    total_results: int | None
-    next_page: int | None
-    filter_diagnostics: FilterDiagnostics | None
+    total_results: int
+    next_page: int
+    filter_diagnostics: FilterDiagnostics
 
 
 class _CollectionMediaRequired(_SearchListBase):
@@ -116,12 +107,11 @@ class _CollectionMediaRequired(_SearchListBase):
 class CollectionMediaResult(_CollectionMediaRequired, total=False):
     """``pexels_get_collection_media`` return envelope. ``photos`` and
     ``videos`` are always present (possibly empty) so the agent can
-    iterate both lists unconditionally. See :class:`PhotoListResult` for
-    why optional fields are explicitly ``T | None``."""
+    iterate both lists unconditionally."""
 
-    total_results: int | None
-    next_page: int | None
-    filter_diagnostics: FilterDiagnostics | None
+    total_results: int
+    next_page: int
+    filter_diagnostics: FilterDiagnostics
 
 
 class SinglePhotoResult(TypedDict):

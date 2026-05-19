@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pexels_mcp_server.formatters import (
+    PhotoListResult,
     filter_by_dimensions,
     format_collection_media,
     format_photo_list,
@@ -189,50 +190,54 @@ def test_envelope_omits_filter_diagnostics_when_payload_has_none() -> None:
     assert "filter_diagnostics" not in out
 
 
-# --- Output-schema regression (MCP SDK 1.27 emits null for absent optional --
-# --- TypedDict fields; the schema MUST accept that null) -----------------
+# --- SDK convert_result patch regression ----------------------------------
+# The MCP Python SDK 1.27 dumps tool results via ``model_dump(mode="json")``
+# without ``exclude_unset=True``, leaking ``null`` for every optional
+# TypedDict field. We patch ``FuncMetadata.convert_result`` to add the
+# missing flag (see ``_sdk_patches.py``). This test guards both that the
+# patch is applied and that it produces the right structured payload.
 
 
-def test_output_schema_accepts_null_for_optional_fields() -> None:
-    """``model_dump(mode="json")`` in the MCP SDK does not pass
-    ``exclude_unset=True``, so optional TypedDict fields land as ``null``
-    in ``structuredContent``. Until the SDK is fixed, our TypedDicts
-    declare optional fields as ``T | None`` so the generated jsonschema
-    accepts that bogus ``null`` (otherwise the call fails with
-    ``"None is not of type 'object'"``)."""
+def _shape_probe() -> PhotoListResult:  # pragma: no cover - shape probe only
+    return format_photo_list({})
+
+
+def test_sdk_convert_result_patch_omits_unset_optional_typeddict_fields() -> None:
+    """End-to-end check: the patched ``convert_result`` must not leak
+    ``filter_diagnostics``/``total_results``/``next_page`` as ``null``
+    when the formatter never set them. Without the patch, calls fail
+    with ``Output validation error: None is not of type 'object'``."""
     import jsonschema
-    from mcp.server.fastmcp.utilities.func_metadata import (
-        _create_model_from_typeddict,
-    )
+    from mcp.server.fastmcp.utilities.func_metadata import func_metadata
 
-    from pexels_mcp_server.formatters import (
-        CollectionMediaResult,
-        PhotoListResult,
-        VideoListResult,
-    )
+    meta = func_metadata(_shape_probe)
+    assert meta.output_schema is not None
 
-    for typed_dict in (PhotoListResult, VideoListResult, CollectionMediaResult):
-        pydantic_model = _create_model_from_typeddict(typed_dict)
-        schema = pydantic_model.model_json_schema()
-        # Build the same minimal envelope our formatters return when the
-        # upstream Pexels payload carries none of the optional fields.
-        minimal: dict[str, object] = {
-            "page": 1,
-            "per_page": 5,
-            "count": 0,
-            "has_more": False,
-            "photos": [],
-        }
-        if typed_dict is VideoListResult:
-            minimal = {**{k: v for k, v in minimal.items() if k != "photos"}, "videos": []}
-        elif typed_dict is CollectionMediaResult:
-            minimal = {**minimal, "id": None, "videos": []}
-        validated = pydantic_model.model_validate(minimal)
-        dumped = validated.model_dump(mode="json", by_alias=True)
-        # The SDK injects null for unset optional fields; the schema MUST
-        # accept that — otherwise the call fails with
-        # ``Output validation error: None is not of type 'object'``.
-        jsonschema.validate(instance=dumped, schema=schema)
+    payload = {
+        "page": 1,
+        "per_page": 5,
+        "photos": [
+            {
+                "id": 1,
+                "alt": "Eiffel",
+                "url": "https://pexels.com/photo/1",
+                "photographer": "X",
+                "photographer_url": "https://pexels.com/@x",
+                "width": 4000,
+                "height": 6000,
+                "src": {"original": "https://images.pexels.com/photos/1/original.jpg"},
+            }
+        ],
+    }
+    converted = meta.convert_result(format_photo_list(payload))
+    assert isinstance(converted, tuple)
+    _, structured = converted
+
+    assert "filter_diagnostics" not in structured
+    assert "total_results" not in structured
+    assert "next_page" not in structured
+
+    jsonschema.validate(instance=structured, schema=meta.output_schema)
 
 
 # --- filter_by_dimensions: post-hoc filter -------------------------------
