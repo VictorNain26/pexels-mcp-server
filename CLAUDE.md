@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-Pexels MCP server: an async Python Model Context Protocol server exposing nine read-only Pexels REST tools (search/get/preview photos, videos, collections) to MCP-aware AI agents.
+Pexels MCP server: an async Python Model Context Protocol server exposing nine read-only Pexels REST tools (search/get/list photos, videos, collections) to MCP-aware AI agents.
 
 **One canonical deployment topology**: hosted Streamable HTTP with OAuth 2.1 + RFC 9728. The same `/mcp` endpoint works with claude.ai web custom connectors, Claude Desktop remote connectors, Claude Code HTTP transport, MCP Inspector, and any future MCP HTTP client. Stdio is still wired in FastMCP (zero marginal cost) for clients that can only speak stdio (Cursor), but it is **not** the supported topology — every doc, deploy guide, and security model targets the hosted HTTP mode.
 
@@ -59,7 +59,6 @@ client.py       Async httpx wrapper for Pexels REST; one retry on 5xx with jitte
 formatters.py   Token-lean JSON projections + Markdown summaries + rate_limit envelope
 
 ASGI helpers (off the main path):
-previews.py     Concurrent thumbnail fetcher for the visual-pick tool (semaphore-capped)
 transport.py    healthz_middleware (/healthz, /readyz) and pexels_key_middleware (X-Pexels-Api-Key)
 ```
 
@@ -120,15 +119,9 @@ Healthz and readyz short-circuit before any auth (platform probes don't trigger 
 
 DNS rebinding protection is **off by default** (`MCP_ALLOWED_HOSTS` unset → `enable_dns_rebinding_protection=False`); OAuth Bearer validation is the gate. On Koyeb, set `MCP_ALLOWED_HOSTS={{ KOYEB_PUBLIC_DOMAIN }}` to re-enable it on the known public host.
 
-### Preview tool security model
+### No outbound URL fetching from tools
 
-`pexels_preview_media` is the only tool that fetches arbitrary URLs. Three layers prevent SSRF:
-
-1. **Schema-layer allowlist**: `PreviewMediaParams._check_hosts` rejects anything not on `https://images.pexels.com` before any network I/O. Hosts whitelist is `PEXELS_CDN_HOSTS` in `constants.py`.
-2. **No redirect following**: `previews.fetch_thumbnails` builds httpx with `follow_redirects=False` — a CDN redirect would bypass the host check.
-3. **Caps**: max 6 URLs per call (`PREVIEW_MAX_COUNT`), 256 KB per thumbnail (`PREVIEW_MAX_BYTES`), 12 concurrent fetches process-wide (`_PREVIEW_SEMAPHORE`).
-
-Never relax these in passing.
+Every tool talks only to `api.pexels.com` through `client.py`. There is no tool that takes a URL from the caller and fetches it server-side — that vector was deliberately removed to eliminate any SSRF surface. If a future tool needs to fetch caller-supplied URLs, gate them behind an allowlist enforced at the Pydantic schema layer (not at the network layer) and document the threat model in a section like this one.
 
 ## Conventions
 
@@ -180,7 +173,6 @@ All tool inputs go through a Pydantic model in `schemas.py` with `ConfigDict(ext
 - `test_client.py` (HTTP layer with pytest-httpx mocks)
 - `test_schemas.py` (validation)
 - `test_formatters.py` (projection shape)
-- `test_previews.py` (CDN whitelist + ImageContent)
 - `test_transport.py` (healthz + pexels_key ASGI middleware)
 - `test_auth.py` (PexelsOAuthProvider unit tests — register, authorize, /login flow, code/token exchange, expiry, revoke)
 - `test_server_config.py` (FastMCP wiring smoke tests)

@@ -27,7 +27,11 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ### Removed
 - `bearer_auth_middleware`, `_extract_bearer`, and the `MCP_AUTH_TOKEN` / `MCP_ALLOW_UNAUTHED` env vars. The static-Bearer model never satisfied the MCP authorization spec (no `WWW-Authenticate`, no RFC 9728 metadata, no Dynamic Client Registration) and broke claude.ai web's custom-connector add flow.
+- `pexels_preview_media` tool + `src/pexels_mcp_server/previews.py` + `tests/test_previews.py` + `PreviewMediaParams` schema + the preview-specific constants in `constants.py` (`PEXELS_CDN_HOSTS`, `PREVIEW_MAX_COUNT`, `PREVIEW_MAX_CONCURRENT_FETCHES`, `PREVIEW_FETCH_TIMEOUT_SECONDS`, `PREVIEW_MAX_BYTES`). The tool was not part of the Pexels REST surface — it was a vision-pick convenience we invented on top — and the SSRF surface it created (server-side fetch of caller-supplied URLs) had no equivalent in the official Pexels client libraries. Dropped to keep the tool list 1:1 with the Pexels API.
 - `src/pexels_mcp_server/types.py` (107 lines of orphan `TypedDict` mirrors of the Pexels API) — already shipped under [0.6.0]'s `[Unreleased]` entry, kept here for the consolidated release notes.
+
+### Tools added in this release
+- `pexels_get_my_collections` — wraps the Pexels `GET /v1/collections` endpoint (the bare root, not `/featured`). Lists the collections owned by the API key holder, same envelope shape as `pexels_list_featured_collections`. No OAuth Pexels required: the standard `Authorization: <api_key>` scheme works (confirmed against the official Pexels API docs). Brings the tool count back to nine and the project's coverage to 1:1 with the Pexels REST surface.
 
 ## [0.6.0] - 2026-05-19
 

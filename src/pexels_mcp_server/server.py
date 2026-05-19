@@ -15,12 +15,10 @@ import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import Any
 
 from mcp.server.auth.provider import ProviderTokenVerifier
 from mcp.server.auth.settings import AuthSettings, ClientRegistrationOptions
 from mcp.server.fastmcp import Context, FastMCP
-from mcp.server.fastmcp.utilities.types import Image
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
 from pydantic import AnyHttpUrl, ValidationError
@@ -40,7 +38,6 @@ from .formatters import (
     format_single_video,
     format_video_list,
 )
-from .previews import fetch_thumbnails
 from .schemas import (
     CollectionMediaParams,
     CollectionMediaType,
@@ -48,10 +45,10 @@ from .schemas import (
     FeaturedCollectionsParams,
     GetPhotoParams,
     GetVideoParams,
+    MyCollectionsParams,
     Orientation,
     PhotoSize,
     PopularVideosParams,
-    PreviewMediaParams,
     ResponseFormat,
     SearchPhotosParams,
     SearchVideosParams,
@@ -613,58 +610,46 @@ async def pexels_get_collection_media(
 
 
 @mcp.tool(
-    name="pexels_preview_media",
-    title="Preview Pexels Thumbnails Visually",
+    name="pexels_get_my_collections",
+    title="List Pexels Collections Owned by the API Key Holder",
     annotations=_READ_ONLY_ANNOTATIONS,
-    structured_output=False,
 )
-async def pexels_preview_media(
+async def pexels_get_my_collections(
     ctx: Context,  # type: ignore[type-arg]
-    thumbnail_urls: list[str],
-) -> Any:
-    """Fetch small Pexels thumbnails and return them as inline images.
+    page: int = 1,
+    per_page: int = 15,
+    response_format: ResponseFormat = ResponseFormat.JSON,
+) -> str:
+    """List the Pexels collections owned by the current API key holder.
 
-    USE WHEN: you ran a search, you have 2-6 candidates, and you need to
-      see them to pick the best fit. Pass the ``thumbnail_url`` field of
-      photos or the ``preview_image_url`` field of videos that the search
-      tools already returned.
-    DO NOT USE WHEN: you have not searched yet. Search first; this tool
-      does not look anything up. Also skip this tool if the client model
-      cannot consume image content (text-only models). For pure text
-      picking, the ``alt`` field on each photo is already in the search
-      envelope and is enough most of the time.
+    USE WHEN: the user wants to browse the collections they have built on
+      their own Pexels account (their saved curated sets), not Pexels'
+      editorial picks. Example: "show me my Pexels collections" after the
+      user has organised photos into folders on pexels.com.
+    DO NOT USE WHEN: the user wants editor-curated themed bundles. Call
+      ``pexels_list_featured_collections`` instead. Also do not use when no
+      Pexels API key is in scope — the endpoint returns the caller's own
+      collections only.
 
-    Returns one TextContent block summarizing the batch followed by one
-    ImageContent block per URL (in the same order). Each thumbnail is
-    base64-encoded inline; the calling model decides which id to use.
+    Returns the same envelope shape as ``pexels_list_featured_collections``:
+    ``{collections: [{id, title, description, media_count, photos_count,
+    videos_count}], page, per_page, total_results, ...}``. Feed any ``id``
+    into ``pexels_get_collection_media`` to fetch its contents.
 
-    Only URLs whose host is ``images.pexels.com`` are accepted. Anything
-    else is rejected at validation time. Maximum 6 URLs per call. Each
-    thumbnail body is capped at 256 KB; oversized files come back as an
-    error string instead of an image, with the rest of the batch
-    untouched.
+    Per-page maximum is 80 (Pexels limit). The collections include both
+    public and private collections — Pexels does not surface a flag here.
     """
     try:
-        params = PreviewMediaParams(thumbnail_urls=thumbnail_urls)
-        results = await fetch_thumbnails(params.thumbnail_urls)
+        params = MyCollectionsParams(
+            page=page,
+            per_page=per_page,
+            response_format=response_format,
+        )
+        payload, rate_limit = await _client(ctx).list_my_collections(
+            api_key=_resolve_api_key(ctx),
+            page=params.page,
+            per_page=params.per_page,
+        )
+        return format_collection_list(payload, rate_limit, params.response_format.value)
     except Exception as exc:
-        return [_format_error(exc)]
-
-    blocks: list[str | Image] = []
-    ok = sum(1 for r in results if r.image is not None)
-    summary_lines = [f"Loaded {ok}/{len(results)} thumbnails:"]
-    for index, result in enumerate(results, start=1):
-        if result.image is not None:
-            summary_lines.append(f"  {index}. {result.url} - ok")
-        else:
-            # Sanitize before model injection: httpx exception strings can
-            # contain TLS cert details, IP addresses or redirect chains we
-            # do not want flowing into the agent context.
-            raw_error = result.error or "unknown error"
-            safe_error = raw_error.replace("\n", " ").replace("\r", " ")[:80]
-            summary_lines.append(f"  {index}. {result.url} - failed: {safe_error}")
-    blocks.append("\n".join(summary_lines))
-    for result in results:
-        if result.image is not None:
-            blocks.append(result.image)
-    return blocks
+        return _format_error(exc)

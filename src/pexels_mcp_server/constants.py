@@ -12,24 +12,6 @@ PHOTOS_PREFIX: Final[str] = "/v1"
 VIDEOS_PREFIX: Final[str] = "/v1/videos"
 COLLECTIONS_PREFIX: Final[str] = "/v1/collections"
 
-# Hosts the preview tool will fetch from. Anything else is rejected upfront
-# to keep the tool from doubling as an SSRF gadget.
-PEXELS_CDN_HOSTS: Final[frozenset[str]] = frozenset({"images.pexels.com"})
-
-# Maximum thumbnails returned per pexels_preview_media call. Each one is
-# encoded as base64 in the MCP response so the budget matters.
-PREVIEW_MAX_COUNT: Final[int] = 6
-
-# Maximum concurrent thumbnail fetches across all sessions on this process.
-# Without a cap, N concurrent MCP sessions each calling pexels_preview_media
-# would create N * PREVIEW_MAX_COUNT outbound connections, saturating the
-# httpx pool and risking a flood from the Pexels CDN's perspective.
-PREVIEW_MAX_CONCURRENT_FETCHES: Final[int] = 12
-
-# Per-request timeout and total cap for the preview fetcher.
-PREVIEW_FETCH_TIMEOUT_SECONDS: Final[float] = 10.0
-PREVIEW_MAX_BYTES: Final[int] = 256 * 1024  # 256 KB per thumbnail; tiny is ~30 KB
-
 DEFAULT_PER_PAGE: Final[int] = 15
 MAX_PER_PAGE: Final[int] = 80
 DEFAULT_PAGE: Final[int] = 1

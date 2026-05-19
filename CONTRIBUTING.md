@@ -34,14 +34,12 @@ src/pexels_mcp_server/
   client.py            Async httpx client wrapping the Pexels REST API
   schemas.py           Pydantic v2 input models (extra="forbid")
   formatters.py        Token-lean JSON projections + Markdown bullets
-  previews.py          Thumbnail fetcher for the visual-pick tool
   transport.py         ASGI middleware (healthz, X-Pexels-Api-Key extractor)
-  constants.py         BASE_URL, allowed hosts, pagination limits
+  constants.py         BASE_URL, pagination limits
 tests/
   test_client.py       HTTP layer (pytest-httpx)
   test_schemas.py      Pydantic validation
   test_formatters.py   Lean output shape
-  test_previews.py     CDN whitelist + ImageContent wrapping
   test_transport.py    ASGI middleware (healthz, pexels_key)
   test_auth.py         OAuth provider unit tests (register, authorize, login, exchange, expiry, revoke)
   test_server_config.py  FastMCP wiring smoke tests
@@ -59,7 +57,9 @@ tests/
 
 ## What this project will not accept
 
-- Tools that require OAuth (Pexels' `My Collections` endpoint).
+- Tools whose only purpose is to fetch caller-supplied URLs. Anything that
+  takes a URL parameter from the caller is a potential SSRF vector and
+  must justify its existence against the threat model.
 - A re-export of the entire Pexels response. Every field added to a projection must have a clear agent use case.
 - New dependencies without justification. The runtime stack is `mcp`, `httpx`, `pydantic`. Keep it that way.
 - `# type: ignore` without a comment explaining why.

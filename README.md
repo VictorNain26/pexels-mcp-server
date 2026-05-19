@@ -5,7 +5,7 @@
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](pyproject.toml)
 [![MCP](https://img.shields.io/badge/MCP-1.27%2B-7c3aed.svg)](https://modelcontextprotocol.io/)
 
-A Model Context Protocol (MCP) server that gives AI agents access to free stock photos and videos from [Pexels](https://www.pexels.com/). Plug it into Claude Desktop, Claude Code, Cursor or any MCP-aware agent and the model gains nine read-only tools to search, browse, resolve and **visually preview** Pexels media.
+A Model Context Protocol (MCP) server that gives AI agents access to free stock photos and videos from [Pexels](https://www.pexels.com/). Plug it into Claude Desktop, Claude Code, Cursor or any MCP-aware agent and the model gains nine read-only tools to search, browse and resolve Pexels media.
 
 Designed around Anthropic's [Writing tools for agents](https://www.anthropic.com/engineering/writing-tools-for-agents) guidance: structured JSON responses by default, token-lean payloads (no per-resolution clutter), descriptions written for an LLM caller, actionable error messages, optional vision-driven selection.
 
@@ -19,19 +19,18 @@ Designed around Anthropic's [Writing tools for agents](https://www.anthropic.com
 | `pexels_search_videos` | Find videos by query, with orientation / size / locale filters. |
 | `pexels_popular_videos` | Browse trending videos, optionally bounded by resolution or duration. |
 | `pexels_get_video` | Resolve a video id to its canonical record. |
-| `pexels_list_featured_collections` | Discover themed media bundles. |
+| `pexels_list_featured_collections` | Discover themed media bundles curated by Pexels editors. |
+| `pexels_get_my_collections` | List the collections owned by the current Pexels API key holder. |
 | `pexels_get_collection_media` | Read the contents of a specific collection. |
-| `pexels_preview_media` | Fetch thumbnails of search results as inline images so a vision-capable agent picks visually. |
 
 Every search/list tool returns a JSON envelope with `total_results`, `has_more`, `next_page` and a `rate_limit` block, so the agent can paginate and self-pace.
 
 ## How the agent picks the best image
 
-Pexels already ranks search results by relevance. On top of that, the tools are shaped to let the agent reason its way to the right shot in three steps:
+Pexels already ranks search results by relevance. On top of that, the tools are shaped to let the agent reason its way to the right shot in two steps:
 
 1. **Frame the query and filters.** The agent should translate the user's request into a tight search term plus the filters that matter (`orientation` for hero banners, `color` for brand fit, `size` if the user wants print-quality, `min_duration` for videos that need to last a certain time). Aggressive filtering on the first call is cheaper than scanning 80 candidates afterwards.
-2. **Read the shortlist text-first.** `pexels_search_photos` returns up to 15 candidates by default with `alt` text, dimensions and photographer credit. For most picks this is enough: the agent reads the alt strings, drops anything off-topic, and keeps 2-6 candidates.
-3. **(Optional) confirm visually with `pexels_preview_media`.** When the user needs the "right" shot and the alt text alone is ambiguous, the agent passes the shortlisted `thumbnail_url` values (or `preview_image_url` for videos) into `pexels_preview_media`. The tool fetches each thumbnail from `images.pexels.com`, returns them as inline `ImageContent`, and the vision-capable model picks the winner visually. The path is whitelisted (no SSRF) and the payload is capped at 6 thumbnails per call.
+2. **Read the shortlist text-first.** `pexels_search_photos` returns up to 15 candidates by default with `alt` text, dimensions and photographer credit. The agent reads the alt strings, drops anything off-topic, and returns the best `image_url` plus the mandatory `photographer` / `photographer_url`.
 
 When the agent commits to a pick, it returns the `image_url` (full resolution) plus the `photographer` and `photographer_url` to honor the [Pexels attribution requirement](https://www.pexels.com/license/).
 
@@ -255,26 +254,17 @@ pexels_search_videos(
 
 Then, since the search tool already trims to the top 3 files by resolution, the agent reads `files[0].url` for the highest-quality MP4 stream and `duration_seconds` to confirm length before committing.
 
-### 3. Visual pick after an ambiguous text shortlist
+### 3. Browse the caller's own Pexels collections
 
-When the user wants *the right* shot and `alt` text alone can't decide between candidates, the agent passes the shortlisted `thumbnail_url` values into the visual-pick tool. The thumbnails come back inline as `ImageContent` blocks and a vision-capable model picks the winner.
+When the user wants to pick from their own saved Pexels collections (folders they curate on pexels.com), the agent calls the my-collections tool first, then drills into the chosen one.
 
 ```
-# Step 1: search and read alt text
-photos = pexels_search_photos(query="minimalist desk setup", per_page=4)
-
-# Step 2: extract the 4 thumbnail_url values and call:
-pexels_preview_media(
-  thumbnail_urls=[
-    "https://images.pexels.com/photos/.../medium.jpeg",
-    "https://images.pexels.com/photos/.../medium.jpeg",
-    "https://images.pexels.com/photos/.../medium.jpeg",
-    "https://images.pexels.com/photos/.../medium.jpeg",
-  ]
-)
+collections = pexels_get_my_collections(per_page=10)
+# pick one based on title/description, then:
+items = pexels_get_collection_media(collection_id="<id from above>", per_page=20)
 ```
 
-URLs are checked at validation time: only `https://images.pexels.com` is accepted, every other host is rejected before any network call (no SSRF surface). Each thumbnail is capped at 256 KB and the batch is capped at 6 URLs.
+The collections include both public and private ones (Pexels does not flag them here). The `media_count`, `photos_count` and `videos_count` fields help the agent decide which one to open.
 
 ## Rate limits and attribution
 
@@ -290,7 +280,6 @@ If you publish assets returned by this server, you must credit the photographer/
 - **Token-lean payloads.** Photo responses drop `liked`, `photographer_id`, `avg_color` and the six per-orientation `src` URLs (keeping just `image_url` and `thumbnail_url`). Video responses keep only the top 3 files by resolution and report `total_files_available` so the agent knows there's more.
 - **Strict inputs.** Every tool argument is validated by Pydantic v2 with `extra="forbid"`; invalid values come back as `Invalid parameters: <field>: <reason>` rather than a raw exception.
 - **Actionable errors.** Missing key → `Pexels API key is invalid or missing. Set PEXELS_API_KEY ...`. Rate limit hit → `Pexels rate limit exceeded. Resets at <ISO>. Reduce request frequency.`
-- **No SSRF.** `pexels_preview_media` rejects any URL whose host is not `images.pexels.com` at validation time, before the network fetch.
 
 ## Checks and contributions
 
