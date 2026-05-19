@@ -26,6 +26,51 @@ _HEX_COLOR_RE = re.compile(r"^[0-9A-Fa-f]{6}$")
 # and underscores). Anchoring the regex prevents path-injection patterns like
 # "../photos" landing in URL paths.
 _COLLECTION_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+# A 100 000 px upper bound on min_width/min_height stops a typo from
+# becoming an unreachable filter (Pexels' largest assets cap around 25 000 px).
+_MAX_DIMENSION_PX = 100_000
+
+_ASPECT_RATIO_HELP = (
+    "aspect_ratio must look like 'W:H' (e.g. '16:9', '1:1', '9:16') "
+    "or a positive decimal with an explicit dot (e.g. '1.5', '0.5625')."
+)
+
+
+def parse_aspect_ratio(value: str) -> float:
+    """Parse '16:9', '1:1', '0.5625' (etc.) into a positive float ratio.
+
+    A bare integer like ``"16"`` is rejected even though Python could
+    parse it as a float — it is much more likely a half-typed ``"16:9"``
+    than an intentional 16:1 ratio. Requiring the explicit dot avoids the
+    foot-gun.
+
+    Raises :class:`ValueError` on any malformed input so a Pydantic
+    field_validator can surface an actionable message to the agent.
+    """
+    cleaned = value.strip()
+    if not cleaned:
+        raise ValueError(_ASPECT_RATIO_HELP)
+    if ":" in cleaned:
+        parts = cleaned.split(":")
+        if len(parts) != 2:
+            raise ValueError(_ASPECT_RATIO_HELP)
+        try:
+            width = float(parts[0].strip())
+            height = float(parts[1].strip())
+        except ValueError as exc:
+            raise ValueError(_ASPECT_RATIO_HELP) from exc
+        if width <= 0 or height <= 0:
+            raise ValueError("aspect_ratio components must both be positive.")
+        return width / height
+    if "." not in cleaned:
+        raise ValueError(_ASPECT_RATIO_HELP)
+    try:
+        ratio = float(cleaned)
+    except ValueError as exc:
+        raise ValueError(_ASPECT_RATIO_HELP) from exc
+    if ratio <= 0:
+        raise ValueError("aspect_ratio must be positive.")
+    return ratio
 
 
 class ResponseFormat(str, Enum):
@@ -207,6 +252,59 @@ def _include_previews_field() -> Any:
     )
 
 
+def _min_width_field() -> Any:
+    return Field(
+        default=None,
+        ge=1,
+        le=_MAX_DIMENSION_PX,
+        description=(
+            "Server-side post-filter: drop any result whose native width is "
+            "below this pixel value. Useful for print (need ~4000 px for "
+            "A4 at 300 DPI) or hero banners (need ~1920 px minimum)."
+        ),
+    )
+
+
+def _min_height_field() -> Any:
+    return Field(
+        default=None,
+        ge=1,
+        le=_MAX_DIMENSION_PX,
+        description=(
+            "Server-side post-filter: drop any result whose native height is "
+            "below this pixel value."
+        ),
+    )
+
+
+def _aspect_ratio_field() -> Any:
+    return Field(
+        default=None,
+        max_length=20,
+        description=(
+            "Server-side post-filter on width/height ratio. Accepts 'W:H' "
+            "(e.g. '16:9' for hero, '1:1' for Instagram square, '9:16' for "
+            "Story, '4:5' for LinkedIn portrait, '21:9' for ultrawide) or a "
+            "positive decimal ('1.5', '0.5625'). Matched within "
+            "``aspect_ratio_tolerance`` of the target."
+        ),
+    )
+
+
+def _aspect_ratio_tolerance_field() -> Any:
+    return Field(
+        default=0.05,
+        ge=0.0,
+        le=0.5,
+        description=(
+            "Relative tolerance applied to ``aspect_ratio`` matching, "
+            "default 5%. With ratio=1.0 and tolerance=0.05, anything from "
+            "0.95 to 1.05 matches. Bump to 0.10 for more candidates, drop "
+            "to 0.02 for stricter matching."
+        ),
+    )
+
+
 class SearchPhotosParams(Pagination):
     """Inputs for ``pexels_search_photos``."""
 
@@ -227,6 +325,10 @@ class SearchPhotosParams(Pagination):
         max_length=16,
         description="BCP-47 locale (e.g. en-US, fr-FR). See Pexels docs for the full list.",
     )
+    min_width: int | None = _min_width_field()
+    min_height: int | None = _min_height_field()
+    aspect_ratio: str | None = _aspect_ratio_field()
+    aspect_ratio_tolerance: float = _aspect_ratio_tolerance_field()
     response_format: ResponseFormat = Field(
         default=ResponseFormat.JSON,
         description=(
@@ -236,6 +338,14 @@ class SearchPhotosParams(Pagination):
         ),
     )
     include_previews: bool = _include_previews_field()
+
+    @field_validator("aspect_ratio")
+    @classmethod
+    def _check_aspect_ratio(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        parse_aspect_ratio(value)
+        return value
 
     @field_validator("color")
     @classmethod
@@ -260,8 +370,20 @@ class SearchPhotosParams(Pagination):
 class CuratedPhotosParams(Pagination):
     """Inputs for ``pexels_curated_photos``."""
 
+    min_width: int | None = _min_width_field()
+    min_height: int | None = _min_height_field()
+    aspect_ratio: str | None = _aspect_ratio_field()
+    aspect_ratio_tolerance: float = _aspect_ratio_tolerance_field()
     response_format: ResponseFormat = Field(default=ResponseFormat.JSON)
     include_previews: bool = _include_previews_field()
+
+    @field_validator("aspect_ratio")
+    @classmethod
+    def _check_aspect_ratio(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        parse_aspect_ratio(value)
+        return value
 
 
 class GetPhotoParams(_StrictModel):
@@ -283,6 +405,10 @@ class SearchVideosParams(Pagination):
         max_length=16,
         description="BCP-47 locale (e.g. en-US, fr-FR).",
     )
+    min_width: int | None = _min_width_field()
+    min_height: int | None = _min_height_field()
+    aspect_ratio: str | None = _aspect_ratio_field()
+    aspect_ratio_tolerance: float = _aspect_ratio_tolerance_field()
     response_format: ResponseFormat = Field(default=ResponseFormat.JSON)
     include_previews: bool = _include_previews_field()
 
@@ -290,6 +416,14 @@ class SearchVideosParams(Pagination):
     @classmethod
     def _check_locale(cls, value: str | None) -> str | None:
         return _validate_locale(value)
+
+    @field_validator("aspect_ratio")
+    @classmethod
+    def _check_aspect_ratio(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        parse_aspect_ratio(value)
+        return value
 
 
 class PopularVideosParams(Pagination):
@@ -311,8 +445,18 @@ class PopularVideosParams(Pagination):
         ge=1,
         description="Maximum video duration in seconds.",
     )
+    aspect_ratio: str | None = _aspect_ratio_field()
+    aspect_ratio_tolerance: float = _aspect_ratio_tolerance_field()
     response_format: ResponseFormat = Field(default=ResponseFormat.JSON)
     include_previews: bool = _include_previews_field()
+
+    @field_validator("aspect_ratio")
+    @classmethod
+    def _check_aspect_ratio(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        parse_aspect_ratio(value)
+        return value
 
 
 class GetVideoParams(_StrictModel):
@@ -347,8 +491,20 @@ class CollectionMediaParams(Pagination):
         default=None,
         description="Sort by creation date (asc or desc).",
     )
+    min_width: int | None = _min_width_field()
+    min_height: int | None = _min_height_field()
+    aspect_ratio: str | None = _aspect_ratio_field()
+    aspect_ratio_tolerance: float = _aspect_ratio_tolerance_field()
     response_format: ResponseFormat = Field(default=ResponseFormat.JSON)
     include_previews: bool = _include_previews_field()
+
+    @field_validator("aspect_ratio")
+    @classmethod
+    def _check_aspect_ratio(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        parse_aspect_ratio(value)
+        return value
 
     @field_validator("collection_id")
     @classmethod

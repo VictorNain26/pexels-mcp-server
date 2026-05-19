@@ -160,7 +160,7 @@ async def _make_session(http_server: Any) -> str:
 
 async def test_setup_post_redirects_on_valid_key(http_server: Any, httpx_mock: HTTPXMock) -> None:
     httpx_mock.add_response(
-        url=f"{BASE_URL}/v1/curated?per_page=1",
+        url=f"{BASE_URL}/v1/collections?per_page=1",
         json={"page": 1, "per_page": 1, "total_results": 0, "photos": []},
         headers={"X-Ratelimit-Remaining": "200"},
         match_headers={"Authorization": "good-pexels-key"},
@@ -187,7 +187,7 @@ async def test_setup_post_re_renders_with_error_on_invalid_key(
     http_server: Any, httpx_mock: HTTPXMock
 ) -> None:
     httpx_mock.add_response(
-        url=f"{BASE_URL}/v1/curated?per_page=1",
+        url=f"{BASE_URL}/v1/collections?per_page=1",
         status_code=401,
         json={"error": "unauthorized"},
     )

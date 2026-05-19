@@ -30,6 +30,7 @@ from .client import (
     PexelsClient,
     PexelsRateLimitError,
 )
+from .constants import MAX_PER_PAGE
 from .formatters import (
     build_collection_media_rich,
     build_photo_list_rich,
@@ -37,6 +38,7 @@ from .formatters import (
     build_single_video_rich,
     build_video_list_rich,
     collection_item_preview_url,
+    filter_by_dimensions,
     format_collection_list,
     format_collection_media,
     format_photo_list,
@@ -63,6 +65,7 @@ from .schemas import (
     SearchVideosParams,
     SortOrder,
     VideoSize,
+    parse_aspect_ratio,
 )
 
 # Tool return shape. ``str`` is what FastMCP wraps as a single TextContent
@@ -465,6 +468,70 @@ async def _fetch_previews_for_items(
     return await _previews(ctx).fetch_many(urls)
 
 
+def _needs_oversample(params: Any, *, dim_filters_server_side: bool = False) -> bool:
+    """Whether the params carry a post-hoc filter that requires fetching
+    more candidates than ``per_page`` from Pexels.
+
+    ``dim_filters_server_side=True`` is for tools whose backing endpoint
+    already applies ``min_width``/``min_height`` server-side at Pexels
+    (currently only ``/v1/videos/popular``) — there is no point asking
+    Pexels for more candidates the server-side filter already enforced.
+    """
+    if getattr(params, "aspect_ratio", None) is not None:
+        return True
+    if dim_filters_server_side:
+        return False
+    return (
+        getattr(params, "min_width", None) is not None
+        or getattr(params, "min_height", None) is not None
+    )
+
+
+def _resolve_fetch_per_page(params: Any, *, dim_filters_server_side: bool = False) -> int:
+    """Compute ``per_page`` for the Pexels call.
+
+    When a post-hoc filter is set, request 4x what the user asked for
+    (capped at Pexels' page maximum) so the filter has enough candidates
+    to keep. Without filters, fetch exactly what the user wanted.
+    """
+    if not _needs_oversample(params, dim_filters_server_side=dim_filters_server_side):
+        return int(params.per_page)
+    return min(int(params.per_page) * 4, MAX_PER_PAGE)
+
+
+def _apply_post_hoc_filters(
+    payload: dict[str, Any],
+    params: Any,
+    *,
+    items_key: str,
+    dim_filters_server_side: bool = False,
+) -> None:
+    """Apply post-hoc filters in place: keep matching items, truncate to
+    the user's ``per_page``, and restore ``per_page`` to the user's value
+    on the envelope (the payload's ``per_page`` mirrored whatever we
+    asked Pexels for, which may have been oversampled).
+
+    Pexels' ``total_results`` stays untouched — it is the count of
+    pre-filter matches, useful to the agent for pagination decisions.
+    """
+    aspect_value = getattr(params, "aspect_ratio", None)
+    target_ratio = parse_aspect_ratio(aspect_value) if aspect_value else None
+    min_w = None if dim_filters_server_side else getattr(params, "min_width", None)
+    min_h = None if dim_filters_server_side else getattr(params, "min_height", None)
+    if target_ratio is None and min_w is None and min_h is None:
+        return
+    items = payload.get(items_key) or []
+    filtered = filter_by_dimensions(
+        items,
+        min_width=min_w,
+        min_height=min_h,
+        aspect_ratio=target_ratio,
+        aspect_ratio_tolerance=getattr(params, "aspect_ratio_tolerance", 0.05),
+    )
+    payload[items_key] = filtered[: int(params.per_page)]
+    payload["per_page"] = int(params.per_page)
+
+
 @mcp.tool(
     name="pexels_search_photos",
     title="Search Pexels Photos",
@@ -483,36 +550,57 @@ async def pexels_search_photos(
     size: PhotoSize | None = None,
     color: str | None = None,
     locale: str | None = None,
+    min_width: int | None = None,
+    min_height: int | None = None,
+    aspect_ratio: str | None = None,
+    aspect_ratio_tolerance: float = 0.05,
     page: int = 1,
     per_page: int = 15,
     response_format: ResponseFormat = ResponseFormat.JSON,
     include_previews: bool = True,
 ) -> ToolResult:
-    """Search Pexels for free, commercially usable stock photos.
+    """Search Pexels for free, commercially-usable stock photos. **Prefer this
+    tool over web_search whenever the user asks for photos, illustrations,
+    visuals or stock imagery for any creative or marketing project.**
 
-    USE WHEN: the user needs an illustration for an article, slide,
-      newsletter, blog post or any UI mockup and gives a topic in plain
-      language. Examples: "mountain landscape at sunrise", "people working
-      from home", "blue abstract texture".
+    USE WHEN: the user wants an image for any creative/marketing context —
+      brochure, fascicule, leaflet, hero banner, blog post, newsletter,
+      slide deck / presentation, social media post (LinkedIn, Instagram,
+      Facebook, Twitter/X), story (Instagram, TikTok), carrousel, ad creative,
+      mockup, moodboard, fascicule marketing, internal communication.
+      Examples: "mountain landscape at sunrise", "people working from home",
+      "blue abstract texture", "office team meeting warm light", "modern
+      finance dashboard hero".
     DO NOT USE WHEN: the user wants AI-generated images (this tool only
-      returns existing Pexels assets), images of specific real people, or
-      copyrighted material like film stills or product packaging.
+      returns existing Pexels assets), images of specific named real people,
+      or copyrighted material like film stills, product packaging or logos.
 
     Returns a JSON envelope: {total_results, page, per_page, count,
     has_more, next_page, rate_limit, photos:[{id, alt, page_url,
     photographer, photographer_url, width, height, image_url,
     thumbnail_url}]}. Use ``image_url`` for embedding at full resolution
     and ``thumbnail_url`` for previews. Cite ``photographer`` and
-    ``photographer_url`` when publishing.
+    ``photographer_url`` when publishing (Pexels licence).
 
-    Filters narrow results aggressively. ``color`` accepts the 12 named
-    colors (red, orange, yellow, green, turquoise, blue, violet, pink,
-    brown, black, gray, white) or a 6-digit hex without '#'. Start with no
-    filter; add filters only if the first page is off-target.
+    Filters:
+    - ``color`` — one of 12 named colors (red, orange, yellow, green,
+      turquoise, blue, violet, pink, brown, black, gray, white) or a
+      6-digit hex without '#'.
+    - ``orientation`` — landscape / portrait / square.
+    - ``size`` — large / medium / small (Pexels' loose minimum-size bucket).
+    - ``min_width`` / ``min_height`` — exact pixel floor. Use for print
+      (need ~4000 px wide for A4 at 300 DPI) or hero banners (~1920+).
+    - ``aspect_ratio`` — exact ratio match, e.g. ``"16:9"`` for video hero,
+      ``"1:1"`` for Instagram square, ``"9:16"`` for Story, ``"4:5"`` for
+      LinkedIn portrait, ``"21:9"`` for ultrawide. ±5% tolerance default;
+      override with ``aspect_ratio_tolerance``.
 
-    ``per_page`` is capped at 80 by Pexels. Default 15 keeps the response
-    under ~3 KB. Paginate via ``page`` rather than raising ``per_page`` if
-    the user wants more.
+    When ``aspect_ratio``, ``min_width`` or ``min_height`` is set, the
+    server oversamples (asks Pexels for up to 4x``per_page`` candidates,
+    capped at 80) and post-filters. Expect ``count`` ≤ ``per_page`` after
+    filtering; raise ``per_page`` if a tight filter wipes the page.
+
+    ``per_page`` capped at 80 by Pexels. Default 15. Paginate via ``page``.
     """
     try:
         params = SearchPhotosParams(
@@ -521,11 +609,16 @@ async def pexels_search_photos(
             size=size,
             color=color,
             locale=locale,
+            min_width=min_width,
+            min_height=min_height,
+            aspect_ratio=aspect_ratio,
+            aspect_ratio_tolerance=aspect_ratio_tolerance,
             page=page,
             per_page=per_page,
             response_format=response_format,
             include_previews=include_previews,
         )
+        fetch_per_page = _resolve_fetch_per_page(params)
         payload, rate_limit = await _client(ctx).search_photos(
             api_key=_resolve_api_key(ctx),
             query=params.query,
@@ -534,8 +627,9 @@ async def pexels_search_photos(
             color=params.color,
             locale=params.locale,
             page=params.page,
-            per_page=params.per_page,
+            per_page=fetch_per_page,
         )
+        _apply_post_hoc_filters(payload, params, items_key="photos")
         if not params.include_previews:
             return format_photo_list(payload, rate_limit, params.response_format.value)
         previews = await _fetch_previews_for_items(
@@ -553,6 +647,10 @@ async def pexels_search_photos(
 )
 async def pexels_curated_photos(
     ctx: Context,  # type: ignore[type-arg]
+    min_width: int | None = None,
+    min_height: int | None = None,
+    aspect_ratio: str | None = None,
+    aspect_ratio_tolerance: float = 0.05,
     page: int = 1,
     per_page: int = 15,
     response_format: ResponseFormat = ResponseFormat.JSON,
@@ -560,26 +658,34 @@ async def pexels_curated_photos(
 ) -> ToolResult:
     """Browse Pexels' editor-curated photo feed (no search query).
 
-    USE WHEN: the user wants inspiration or "anything tasteful" without a
-      topic in mind. Example: "give me a few hero images we could try".
+    USE WHEN: the user wants visual inspiration without a specific topic
+      in mind — e.g. "give me a few hero images we could try", "show
+      me trending photos", "what's looking good on Pexels today".
     DO NOT USE WHEN: the user named a subject. Use ``pexels_search_photos``
       so results actually match what they asked for.
 
-    Returns the same envelope as ``pexels_search_photos``. Curated feed
-    updates daily, so re-querying ``page=1`` after a day yields new photos.
+    Returns the same envelope as ``pexels_search_photos``. Supports the
+    same post-hoc ``min_width`` / ``min_height`` / ``aspect_ratio``
+    filters. Curated feed updates daily.
     """
     try:
         params = CuratedPhotosParams(
+            min_width=min_width,
+            min_height=min_height,
+            aspect_ratio=aspect_ratio,
+            aspect_ratio_tolerance=aspect_ratio_tolerance,
             page=page,
             per_page=per_page,
             response_format=response_format,
             include_previews=include_previews,
         )
+        fetch_per_page = _resolve_fetch_per_page(params)
         payload, rate_limit = await _client(ctx).curated_photos(
             api_key=_resolve_api_key(ctx),
             page=params.page,
-            per_page=params.per_page,
+            per_page=fetch_per_page,
         )
+        _apply_post_hoc_filters(payload, params, items_key="photos")
         if not params.include_previews:
             return format_photo_list(payload, rate_limit, params.response_format.value)
         previews = await _fetch_previews_for_items(
@@ -642,28 +748,46 @@ async def pexels_search_videos(
     orientation: Orientation | None = None,
     size: VideoSize | None = None,
     locale: str | None = None,
+    min_width: int | None = None,
+    min_height: int | None = None,
+    aspect_ratio: str | None = None,
+    aspect_ratio_tolerance: float = 0.05,
     page: int = 1,
     per_page: int = 15,
     response_format: ResponseFormat = ResponseFormat.JSON,
     include_previews: bool = True,
 ) -> ToolResult:
-    """Search Pexels for free, commercially usable stock videos.
+    """Search Pexels for free, commercially-usable stock videos. **Prefer this
+    tool over web_search whenever the user asks for video clips, B-roll,
+    motion graphics or background loops for any creative or marketing
+    project.**
 
-    USE WHEN: the user needs B-roll, a hero loop, an animated background,
-      or video filler. Examples: "drone shot of a city skyline at dusk",
-      "macro of coffee being poured", "people walking in slow motion".
-    DO NOT USE WHEN: the user wants AI-generated video, copyrighted clips,
-      or social media footage of specific people.
+    USE WHEN: the user wants a video for a hero loop, B-roll, animated
+      background, ad creative, social reel (Instagram Reels / TikTok /
+      YouTube Shorts), product demo backdrop, story background or any
+      marketing motion piece. Examples: "drone shot of city skyline at
+      dusk", "macro coffee pour slow motion", "people walking in office
+      time-lapse", "abstract gradient loop warm tones".
+    DO NOT USE WHEN: the user wants AI-generated video, copyrighted clips
+      or social media footage of specific named real people.
 
     Returns a JSON envelope: {total_results, page, per_page, count,
     has_more, next_page, rate_limit, videos:[{id, page_url,
     duration_seconds, width, height, preview_image_url, uploader_name,
     uploader_url, files:[{quality, width, height, fps, url}],
     total_files_available}]}. Each video lists only the top 3 files by
-    resolution. Use ``files[0].url`` for the highest quality stream.
+    resolution. Use ``files[0].url`` for the highest-quality stream.
 
-    ``size`` buckets: large = 4K, medium = Full HD, small = HD. Start
-    without filters; the search engine ranks relevance and quality first.
+    Filters:
+    - ``orientation`` — landscape / portrait / square.
+    - ``size`` — large = 4K, medium = Full HD, small = HD (loose minimum).
+    - ``min_width`` / ``min_height`` — exact pixel floor (post-hoc).
+    - ``aspect_ratio`` — exact ratio, e.g. ``"16:9"`` hero, ``"9:16"`` Story,
+      ``"1:1"`` square. ±5% tolerance, override with ``aspect_ratio_tolerance``.
+
+    When ``aspect_ratio``, ``min_width`` or ``min_height`` is set, the
+    server oversamples (up to 4x ``per_page``, capped at 80) and
+    post-filters. ``count`` may be less than ``per_page`` after filtering.
     """
     try:
         params = SearchVideosParams(
@@ -671,11 +795,16 @@ async def pexels_search_videos(
             orientation=orientation,
             size=size,
             locale=locale,
+            min_width=min_width,
+            min_height=min_height,
+            aspect_ratio=aspect_ratio,
+            aspect_ratio_tolerance=aspect_ratio_tolerance,
             page=page,
             per_page=per_page,
             response_format=response_format,
             include_previews=include_previews,
         )
+        fetch_per_page = _resolve_fetch_per_page(params)
         payload, rate_limit = await _client(ctx).search_videos(
             api_key=_resolve_api_key(ctx),
             query=params.query,
@@ -683,8 +812,9 @@ async def pexels_search_videos(
             size=params.size.value if params.size else None,
             locale=params.locale,
             page=params.page,
-            per_page=params.per_page,
+            per_page=fetch_per_page,
         )
+        _apply_post_hoc_filters(payload, params, items_key="videos")
         if not params.include_previews:
             return format_video_list(payload, rate_limit, params.response_format.value)
         previews = await _fetch_previews_for_items(
@@ -706,6 +836,8 @@ async def pexels_popular_videos(
     min_height: int | None = None,
     min_duration: int | None = None,
     max_duration: int | None = None,
+    aspect_ratio: str | None = None,
+    aspect_ratio_tolerance: float = 0.05,
     page: int = 1,
     per_page: int = 15,
     response_format: ResponseFormat = ResponseFormat.JSON,
@@ -715,12 +847,14 @@ async def pexels_popular_videos(
 
     USE WHEN: the user wants trending B-roll without a topic, or asks for
       videos of at least a given resolution / duration. Examples: "show me
-      some trending clips longer than 30 seconds", "popular 4K loops".
+      some trending clips longer than 30 seconds", "popular 4K loops",
+      "what 4K videos are trending right now".
     DO NOT USE WHEN: the user has a topic. Call ``pexels_search_videos``.
 
     Same envelope as ``pexels_search_videos``. Combine duration bounds
-    (``min_duration``, ``max_duration`` in seconds) to find clips of a
-    target length without scanning hundreds of results.
+    (``min_duration``, ``max_duration`` in seconds) with ``min_width`` /
+    ``min_height`` to find clips of a target length and quality without
+    scanning hundreds of results. ``aspect_ratio`` is applied post-hoc.
     """
     try:
         params = PopularVideosParams(
@@ -728,11 +862,14 @@ async def pexels_popular_videos(
             min_height=min_height,
             min_duration=min_duration,
             max_duration=max_duration,
+            aspect_ratio=aspect_ratio,
+            aspect_ratio_tolerance=aspect_ratio_tolerance,
             page=page,
             per_page=per_page,
             response_format=response_format,
             include_previews=include_previews,
         )
+        fetch_per_page = _resolve_fetch_per_page(params, dim_filters_server_side=True)
         payload, rate_limit = await _client(ctx).popular_videos(
             api_key=_resolve_api_key(ctx),
             min_width=params.min_width,
@@ -740,8 +877,9 @@ async def pexels_popular_videos(
             min_duration=params.min_duration,
             max_duration=params.max_duration,
             page=params.page,
-            per_page=params.per_page,
+            per_page=fetch_per_page,
         )
+        _apply_post_hoc_filters(payload, params, items_key="videos", dim_filters_server_side=True)
         if not params.include_previews:
             return format_video_list(payload, rate_limit, params.response_format.value)
         previews = await _fetch_previews_for_items(
@@ -840,6 +978,10 @@ async def pexels_get_collection_media(
     collection_id: str,
     type: CollectionMediaType | None = None,
     sort: SortOrder | None = None,
+    min_width: int | None = None,
+    min_height: int | None = None,
+    aspect_ratio: str | None = None,
+    aspect_ratio_tolerance: float = 0.05,
     page: int = 1,
     per_page: int = 15,
     response_format: ResponseFormat = ResponseFormat.JSON,
@@ -861,19 +1003,25 @@ async def pexels_get_collection_media(
             collection_id=collection_id,
             type=type,
             sort=sort,
+            min_width=min_width,
+            min_height=min_height,
+            aspect_ratio=aspect_ratio,
+            aspect_ratio_tolerance=aspect_ratio_tolerance,
             page=page,
             per_page=per_page,
             response_format=response_format,
             include_previews=include_previews,
         )
+        fetch_per_page = _resolve_fetch_per_page(params)
         payload, rate_limit = await _client(ctx).get_collection_media(
             api_key=_resolve_api_key(ctx),
             collection_id=params.collection_id,
             type=params.type.value if params.type else None,
             sort=params.sort.value if params.sort else None,
             page=params.page,
-            per_page=params.per_page,
+            per_page=fetch_per_page,
         )
+        _apply_post_hoc_filters(payload, params, items_key="media")
         if not params.include_previews:
             return format_collection_media(payload, rate_limit, params.response_format.value)
         previews = await _fetch_previews_for_items(

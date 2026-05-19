@@ -1,6 +1,6 @@
-"""Formatter tests: validate the token-lean JSON projections and the rich
+"""Formatter tests: validate the token-lean JSON projections, the rich
 content builders that ship MCP ``ImageContent`` blocks alongside the JSON
-envelope."""
+envelope, and the post-hoc dimension filter used by every list tool."""
 
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ from pexels_mcp_server.formatters import (
     build_single_video_rich,
     build_video_list_rich,
     collection_item_preview_url,
+    filter_by_dimensions,
     format_collection_media,
     format_photo_list,
     format_single_photo,
@@ -338,3 +339,73 @@ def test_build_rich_preserves_envelope_for_agents() -> None:
     assert envelope["total_results"] == 1
     assert envelope["photos"][0]["id"] == 1
     assert envelope["rate_limit"]["remaining"] == 200
+
+
+# --- filter_by_dimensions: post-hoc filter -------------------------------
+
+
+def _item(width: int, height: int) -> dict:
+    return {"id": 1, "width": width, "height": height}
+
+
+def test_filter_by_dimensions_min_width_drops_too_small() -> None:
+    items = [_item(1000, 1000), _item(2000, 1000), _item(500, 500)]
+    out = filter_by_dimensions(items, min_width=1500)
+    assert [i["width"] for i in out] == [2000]
+
+
+def test_filter_by_dimensions_min_height_drops_too_short() -> None:
+    items = [_item(2000, 800), _item(2000, 1080), _item(2000, 200)]
+    out = filter_by_dimensions(items, min_height=1080)
+    assert [i["height"] for i in out] == [1080]
+
+
+def test_filter_by_dimensions_aspect_ratio_with_default_tolerance() -> None:
+    """Default tolerance is 5%. 16:9 (~1.778) matches 1920x1080, rejects 4:3."""
+    items = [
+        _item(1920, 1080),  # 16:9 exactly
+        _item(1600, 1200),  # 4:3 (1.333) — off by far, drop
+        _item(1280, 720),  # 16:9 exactly
+        _item(1900, 1080),  # ~1.759 — within 5% of 1.778
+    ]
+    out = filter_by_dimensions(items, aspect_ratio=16 / 9)
+    assert len(out) == 3
+    assert _item(1600, 1200) not in out
+
+
+def test_filter_by_dimensions_aspect_ratio_tolerance_override() -> None:
+    """Tight tolerance only keeps near-perfect matches."""
+    items = [_item(1920, 1080), _item(1900, 1080)]
+    # 1900/1080 ≈ 1.759 vs target 1.778 → off by ~1%. With tol=0.005 (0.5%), drop.
+    out = filter_by_dimensions(items, aspect_ratio=16 / 9, aspect_ratio_tolerance=0.005)
+    assert out == [_item(1920, 1080)]
+
+
+def test_filter_by_dimensions_combines_all_constraints() -> None:
+    items = [
+        _item(1920, 1080),  # OK: 16:9 + min_width=1920 + min_height=1080
+        _item(1280, 720),  # KO: width < 1920
+        _item(1920, 1440),  # KO: 4:3, not 16:9
+        _item(2560, 1440),  # OK: 16:9 + min_width OK + min_height OK
+    ]
+    out = filter_by_dimensions(items, min_width=1920, min_height=1080, aspect_ratio=16 / 9)
+    assert [i["width"] for i in out] == [1920, 2560]
+
+
+def test_filter_by_dimensions_drops_items_without_dims() -> None:
+    """An item missing width/height is dropped under any filter so unbounded
+    data does not slip through a filter the caller asked for."""
+    items = [
+        {"id": 1, "width": 1920, "height": 1080},
+        {"id": 2},  # no dims
+        {"id": 3, "width": "1920", "height": "1080"},  # wrong type
+        {"id": 4, "width": -10, "height": 1080},  # bad value
+    ]
+    out = filter_by_dimensions(items, min_width=1)
+    assert [i["id"] for i in out] == [1]
+
+
+def test_filter_by_dimensions_noop_when_no_filters() -> None:
+    items = [_item(100, 100), _item(200, 200)]
+    out = filter_by_dimensions(items)
+    assert out == items

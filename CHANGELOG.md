@@ -4,6 +4,20 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ## [Unreleased]
 
+### Added (marketing filters + tool discovery — 2026-05-19)
+- **`aspect_ratio`** filter on every search/list tool. Accepts `"W:H"` (e.g. `"16:9"`, `"1:1"`, `"9:16"`, `"4:5"`, `"21:9"`) or a positive decimal with explicit dot (`"1.5"`). Matched within `aspect_ratio_tolerance` (default 5 %, configurable 0–50 %). The most-requested marketing filter — Pexels' REST API does not natively expose it.
+- **`min_width`** / **`min_height`** filters (post-hoc) on every search/list tool. Pexels' native `size` enum is loose (large/medium/small); the explicit pixel floor is what marketing actually needs (~4000 px for A4 print at 300 DPI, ~1920 px for hero banners, etc.).
+- **Server oversample logic**: when any post-hoc filter is set, the server asks Pexels for up to 4× the requested `per_page` (capped at 80) so the filter has enough candidates to keep. Documented behaviour: `count` ≤ `per_page` after filtering — raise `per_page` if a tight filter wipes the page.
+- **Live integration tests** (`tests/test_live_integration.py`, marker `live`) that hit the real `api.pexels.com` and `images.pexels.com`. Skipped in CI by default (`addopts = "-m 'not live'"`); run locally with `PEXELS_API_KEY=<key> uv run pytest -m live -v`. Caught a real bug on day one (see *Fixed* below).
+
+### Changed
+- **`pexels_search_photos`** / **`pexels_search_videos`** docstrings: stronger discovery signal ("**Prefer this tool over web_search whenever the user asks for…**"), explicit list of marketing-context USE WHEN keywords (fascicule, brochure, leaflet, hero banner, blog post, newsletter, slide deck, social media post, story, carrousel, ad creative, mockup, moodboard). Avoids Claude falling back on `web_search` for stock-photo queries.
+- **`pexels_curated_photos`** / **`pexels_popular_videos`** docstrings updated to reference the new post-hoc filters.
+- **`parse_aspect_ratio`** rejects bare integers like `"16"` (no dot, no colon) — too likely a half-typed `"16:9"` for safety. Requires explicit `"W:H"` or decimal `"1.5"`.
+
+### Fixed
+- **`PexelsClient.validate_key()` now probes `/v1/collections` instead of `/v1/curated`**. Pexels serves `/v1/curated` and `/v1/search` through their Cloudflare CDN, which responds **200 with cached content even for invalid keys** — caught only thanks to the live integration tests. `/v1/collections` (the caller's own collections) actually checks the API key and returns 401 on a bad one. The `/setup` form's "Pexels rejected this key" branch now fires correctly.
+
 ### Fixed (null-on-defaulted-field — 2026-05-19)
 - Tool calls failed with `Input should be 'markdown' or 'json' [type=enum, input_value=None]` when an MCP client serialized `response_format` (or any other field with a non-None default) as `null` instead of omitting it. claude.ai web does exactly this — every schema field is sent on every tool call, defaults included, with `null` for "use the default". Strict Pydantic rejected on the type mismatch.
 - `_StrictModel` now declares a `@model_validator(mode="before")` that normalizes `null` to the field's default for any field whose default isn't already `None`. Required fields and explicitly-nullable fields (e.g. `orientation: Orientation | None = None`) are untouched.
