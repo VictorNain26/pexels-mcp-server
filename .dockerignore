@@ -15,7 +15,6 @@ __pycache__
 !.env.example
 .editorconfig
 CHANGELOG.md
-CONTRIBUTING.md
 CLAUDE.md
 PRIVACY.md
 docs

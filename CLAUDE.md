@@ -12,8 +12,6 @@ single source of truth:
 |---|---|
 | [`README.md`](README.md) | User-facing overview, tool table, OAuth flow, deployment guide. |
 | [`PRIVACY.md`](PRIVACY.md) | What the server processes, stores, logs, and forwards. |
-| [`CONTRIBUTING.md`](CONTRIBUTING.md) | Project layout, how to add a tool, what is rejected. |
-| [`SUBMIT.md`](SUBMIT.md) | Anthropic Connector Directory submission status + checklist. |
 | [`CHANGELOG.md`](CHANGELOG.md) | History of breaking and behaviour-affecting changes. |
 
 If something is documented there, **link** from your work — do not paste a
@@ -40,8 +38,8 @@ re-explanation into this file or into a code comment.
   return-shape teaser. Follow
   [Anthropic's "Writing tools for agents"](https://www.anthropic.com/engineering/writing-tools-for-agents).
 - **Tool annotations are not optional.** Every `@mcp.tool` carries
-  `ToolAnnotations` with `title` + `readOnlyHint`. The Connector Directory
-  rejects ~30 % of submissions for missing these — see `SUBMIT.md`.
+  `ToolAnnotations` with `title` + `readOnlyHint`. The Anthropic Connector
+  Directory rejects ~30 % of submissions for missing these.
 - **No hand-rolled OAuth, no hand-rolled bearer.** The MCP SDK owns the auth
   surface. The only custom piece is `auth.py`'s `OAuthAuthorizationServerProvider`
   implementation and the public landing page at `GET /` registered via
@@ -146,16 +144,6 @@ from this shape is what produces the patches you regret later.
   format is on by default in HTTP mode, so grep / filter by `level`, `logger`,
   `msg`.
 
-### 6. Connector Directory submission
-
-When the time comes to list this server on the
-[Anthropic Connector Directory](https://www.anthropic.com/partners/mcp),
-**every requirement and pre-filled answer is in `SUBMIT.md`** — that file is
-the single checklist. Anthropic rejects on missing privacy policy / missing
-tool annotations / incomplete docs / beta status; we already pass all four.
-Tag a release, fill the remaining `[ ]` items (logo, favicon, screenshots),
-submit the form.
-
 ## Repo memory: what *not* to do (lessons from May 2026)
 
 These are the failure modes from the build-out of this server. Future sessions
@@ -167,7 +155,7 @@ should not repeat them.
 | Passing both `auth_server_provider` *and* `token_verifier` | The SDK raises `ValueError` at boot — caught only at docker smoke-test time. | Pass the provider only; the SDK derives the verifier. |
 | Adding routes via `starlette_app.routes.append(...)` | Works but bypasses the SDK's public API. | Use `@mcp.custom_route` — its docstring names "OAuth callbacks" as the intended use. |
 | Inlining 100 lines of HTML in `server.py` for the landing page | Unreviewable, conflates code and content. | HTML lives in `templates/`, loaded via `importlib.resources`. Hostname injected client-side from `window.location.origin`. |
-| Documenting state in CLAUDE.md (env-var tables, tool tables) | Drift between `README.md` and `CLAUDE.md`. | Functional state lives in `README.md` / `PRIVACY.md` / `SUBMIT.md` — this file *links*. |
+| Documenting state in CLAUDE.md (env-var tables, tool tables) | Drift between `README.md` and `CLAUDE.md`. | Functional state lives in `README.md` / `PRIVACY.md` — this file *links*. |
 | Inventing instead of reading the SDK | "Pas d'invention" — user-level rule that overrides everything. | One Context7 query is cheaper than one rejected PR. |
 
 ## When in doubt

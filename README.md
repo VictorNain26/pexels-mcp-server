@@ -324,7 +324,7 @@ npx @modelcontextprotocol/inspector
 # point it at http://127.0.0.1:8000/mcp once you've launched the dev server
 ```
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for how to add a tool. See [SECURITY.md](.github/SECURITY.md) for how to report a vulnerability. See [PRIVACY.md](PRIVACY.md) for what the server processes and what it does not store.
+See [SECURITY.md](.github/SECURITY.md) for how to report a vulnerability. See [PRIVACY.md](PRIVACY.md) for what the server processes and what it does not store.
 
 ## Compatibility
 
