@@ -48,3 +48,51 @@ jobs:
 
       - name: Run tests
         run: uv run pytest -q
+
+  docker-build:
+    # Validate the Dockerfile builds end-to-end. Catches Dockerfile regressions
+    # (broken layer cache, missing files, COPY ordering) on every PR rather
+    # than discovering them at Koyeb deploy time. No push, no registry.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: test
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: pexels-mcp-server:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke-test image entrypoint
+        # The container must start, write its expected stderr, and exit
+        # cleanly when boot is refused. Catches regressions in __main__.
+        run: |
+          set -e
+          # HTTP mode without auth token must exit code 2.
+          docker run --rm \
+            -e TRANSPORT=streamable-http \
+            pexels-mcp-server:ci 2>&1 \
+            | tee /tmp/refuse.log || true
+          grep -q "MCP_AUTH_TOKEN is required" /tmp/refuse.log
+
+          # HTTP mode with override must boot then exit when nothing keeps
+          # it alive; we just verify the startup log line.
+          docker run --rm -d --name smoke \
+            -e TRANSPORT=streamable-http \
+            -e MCP_ALLOW_UNAUTHED=1 \
+            -e HOST=0.0.0.0 \
+            -e PORT=8000 \
+            pexels-mcp-server:ci
+          sleep 3
+          docker logs smoke 2>&1 | tee /tmp/boot.log
+          docker kill smoke || true
+          grep -q "Starting pexels-mcp-server on streamable-http" /tmp/boot.log
