@@ -162,66 +162,23 @@ async def test_healthz_and_oauth_metadata_do_not_require_auth(
             )
 
 
-# --- MCP Apps wiring ------------------------------------------------------
+# --- Tool registry sanity check ------------------------------------------
 
 
-def test_mcp_apps_resource_is_registered() -> None:
-    """The ui://pexels/results resource MUST be declared with the MCP Apps
-    MIME type so MCP Apps-aware hosts (claude.ai web/desktop, Goose, VS
-    Code, MCPJam) recognise it as a renderable UI rather than raw HTML.
-    """
+def test_tool_registry_holds_exactly_five_tools() -> None:
+    """Five focused tools: search photos / get photo / search videos /
+    get video / get collection media. Inspiration-mode endpoints
+    (curated, popular_videos, list_featured_collections,
+    get_my_collections) were dropped 2026-05-19 — they cost ~1 KB in the
+    tool list presented to the LLM and were rarely used in practice."""
     from pexels_mcp_server import server as module
 
-    listing = module.mcp._resource_manager.list_resources()
-    matches = [r for r in listing if str(r.uri) == "ui://pexels/results"]
-    assert matches, "ui://pexels/results not registered as a resource"
-    resource = matches[0]
-    assert resource.mime_type == "text/html;profile=mcp-app", (
-        f"MCP Apps MIME type required, got {resource.mime_type!r}"
-    )
-
-
-def test_every_search_or_list_tool_carries_ui_resource_uri() -> None:
-    """MCP Apps requires the linked tool to declare `_meta.ui.resourceUri`
-    in its tool definition. Without it, the host has no way to know which
-    UI resource to render alongside the tool result.
-    """
-    from pexels_mcp_server import server as module
-
-    expected_uri = "ui://pexels/results"
-    expected_meta_present_for = {
+    tools = module.mcp._tool_manager.list_tools()
+    names = {t.name for t in tools}
+    assert names == {
         "pexels_search_photos",
-        "pexels_curated_photos",
         "pexels_get_photo",
         "pexels_search_videos",
-        "pexels_popular_videos",
         "pexels_get_video",
         "pexels_get_collection_media",
     }
-    tools = module.mcp._tool_manager.list_tools()
-    by_name = {t.name: t for t in tools}
-    missing = [
-        name
-        for name in expected_meta_present_for
-        if name not in by_name
-        or (by_name[name].meta or {}).get("ui", {}).get("resourceUri") != expected_uri
-    ]
-    assert not missing, f"Tools missing _meta.ui.resourceUri = {expected_uri!r}: {sorted(missing)}"
-
-
-async def test_mcp_apps_resource_serves_html_with_init_handshake() -> None:
-    """End-to-end: reading the resource returns the HTML with the wire
-    protocol handshake JS embedded — proves the bundle the host fetches
-    is correct."""
-    from pexels_mcp_server import server as module
-
-    resource = await module.mcp._resource_manager.get_resource("ui://pexels/results")
-    assert resource is not None
-    body = await resource.read()
-    text = body if isinstance(body, str) else body.decode("utf-8")
-    # The handshake the spec mandates must be present in the bundle.
-    assert "ui/initialize" in text
-    assert "ui/notifications/initialized" in text
-    assert "ui/notifications/tool-result" in text
-    # The bundle must NOT use innerHTML (XSS safety) — DOM-only construction.
-    assert ".innerHTML" not in text

@@ -21,8 +21,7 @@ import os
 import pytest
 
 from pexels_mcp_server.client import PexelsClient
-from pexels_mcp_server.formatters import filter_by_dimensions, photo_preview_url
-from pexels_mcp_server.previews import PreviewFetcher
+from pexels_mcp_server.formatters import filter_by_dimensions
 
 pytestmark = pytest.mark.live
 
@@ -69,24 +68,6 @@ async def test_live_search_with_min_width_excludes_smaller_assets() -> None:
     filtered = filter_by_dimensions(body.get("photos") or [], min_width=4000)
     for photo in filtered:
         assert photo["width"] >= 4000
-
-
-async def test_live_thumbnail_fetch_against_real_cdn() -> None:
-    """End-to-end: search a real photo, fetch its medium thumbnail from
-    images.pexels.com, confirm the body decodes as an image."""
-    key = _require_key()
-    async with PexelsClient() as client:
-        body, _ = await client.search_photos(api_key=key, query="office", per_page=1)
-    photos = body.get("photos") or []
-    assert photos, "Pexels returned no photos for 'office' — Pexels outage?"
-    url = photo_preview_url(photos[0])
-    assert url is not None
-    assert url.startswith("https://images.pexels.com/")
-    async with PreviewFetcher() as fetcher:
-        preview = await fetcher.fetch(url)
-    assert preview is not None
-    assert preview.mime_type.startswith("image/")
-    assert len(preview.data_base64) > 100  # ~real JPEG, not a 1-pixel pixel
 
 
 async def test_live_validate_key_accepts_real_key() -> None:

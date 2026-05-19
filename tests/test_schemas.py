@@ -9,7 +9,6 @@ from pexels_mcp_server.schemas import (
     CollectionMediaParams,
     GetPhotoParams,
     Orientation,
-    PopularVideosParams,
     ResponseFormat,
     SearchPhotosParams,
 )
@@ -19,7 +18,7 @@ def test_search_photos_defaults() -> None:
     params = SearchPhotosParams(query="dogs")
     assert params.query == "dogs"
     assert params.page == 1
-    assert params.per_page == 15
+    assert params.per_page == 5
     assert params.response_format == ResponseFormat.JSON
     assert params.orientation is None
 
@@ -57,11 +56,6 @@ def test_search_photos_accepts_enum_value() -> None:
 def test_get_photo_requires_positive_id() -> None:
     with pytest.raises(ValidationError):
         GetPhotoParams(photo_id=0)
-
-
-def test_popular_videos_rejects_negative_duration() -> None:
-    with pytest.raises(ValidationError):
-        PopularVideosParams(min_duration=-1)
 
 
 def test_collection_media_strips_whitespace() -> None:
@@ -120,27 +114,6 @@ def test_collection_media_accepts_alphanumeric_with_dashes() -> None:
     assert params.collection_id == "abc-123_def"
 
 
-# --- include_previews knob ------------------------------------------------
-
-
-def test_include_previews_defaults_to_false() -> None:
-    """Default false (since 2026-05-19): embedding base64 thumbnails on
-    every search burns vision tokens and fills the claude.ai conversation
-    context fast. The Markdown image syntax in the LLM's response renders
-    inline in claude.ai natively, no embedded previews required."""
-    assert SearchPhotosParams(query="x").include_previews is False
-    assert GetPhotoParams(photo_id=1).include_previews is False
-    assert PopularVideosParams().include_previews is False
-    assert CollectionMediaParams(collection_id="abc").include_previews is False
-
-
-def test_include_previews_can_be_enabled() -> None:
-    """Opt in when the agent wants a vision-pick on top of Pexels'
-    relevance ranking."""
-    params = SearchPhotosParams(query="x", include_previews=True)
-    assert params.include_previews is True
-
-
 # --- null coercion (defensive against MCP clients that serialize defaults
 # as `null` instead of omitting the key) ----------------------------------
 
@@ -153,17 +126,12 @@ def test_response_format_null_is_coerced_to_default() -> None:
     assert params.response_format == ResponseFormat.JSON
 
 
-def test_include_previews_null_is_coerced_to_default() -> None:
-    params = SearchPhotosParams(query="x", include_previews=None)  # type: ignore[arg-type]
-    assert params.include_previews is False
-
-
 def test_page_null_is_coerced_to_default() -> None:
     """Same defensive pattern on ``page`` — defaulting integer fields fail
     strict validation on null too."""
     params = SearchPhotosParams(query="x", page=None, per_page=None)  # type: ignore[arg-type]
     assert params.page == 1
-    assert params.per_page == 15
+    assert params.per_page == 5
 
 
 def test_orientation_null_remains_none() -> None:
@@ -251,10 +219,9 @@ def test_search_photos_rejects_oversized_min_width() -> None:
         SearchPhotosParams(query="cat", min_width=200_000)
 
 
-def test_aspect_ratio_tolerance_bounds() -> None:
-    params = SearchPhotosParams(query="cat", aspect_ratio="1:1", aspect_ratio_tolerance=0.1)
-    assert params.aspect_ratio_tolerance == 0.1
+def test_aspect_ratio_tolerance_no_longer_exposed_as_param() -> None:
+    """The 5% tolerance is now hardcoded — exposing it as a param added
+    noise to the tool input schema (more tokens at conversation init).
+    A future user-facing knob can come back if real demand shows up."""
     with pytest.raises(ValidationError):
-        SearchPhotosParams(query="cat", aspect_ratio_tolerance=-0.1)
-    with pytest.raises(ValidationError):
-        SearchPhotosParams(query="cat", aspect_ratio_tolerance=0.6)
+        SearchPhotosParams(query="cat", aspect_ratio_tolerance=0.1)  # type: ignore[call-arg]

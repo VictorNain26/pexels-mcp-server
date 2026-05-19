@@ -4,6 +4,69 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ## [Unreleased]
 
+### Changed (tech-lead token optimization — 2026-05-19) — **BREAKING**
+
+This pass simplifies the MCP surface to JSON-only output and drops the
+inspiration-mode tools nobody used in practice. The goal is minimal
+tokens at every layer (tool list at conversation init, tool result per
+call, payload per item).
+
+**Tool surface** (9 → 5 tools, ~30 % smaller tool list presented to the LLM):
+- **Dropped** `pexels_curated_photos`, `pexels_popular_videos`,
+  `pexels_list_featured_collections`, `pexels_get_my_collections` — niche
+  discovery endpoints. Most marketing workflows go straight to
+  `pexels_search_photos` / `pexels_search_videos` with a brief.
+- **Kept** `pexels_search_photos`, `pexels_get_photo`,
+  `pexels_search_videos`, `pexels_get_video`, `pexels_get_collection_media`.
+
+**JSON projection** (lean):
+- **Dropped** `thumbnail_url` from the photo shape — redundant with
+  `image_url` (Pexels accepts `?h=350` on either to get a smaller variant).
+- **Dropped** the `rate_limit` block from every envelope. The server
+  still logs a warning under 100 remaining; the LLM didn't action it.
+- **Dropped** every `ImageContent` / `MCP Apps` / `PreviewFetcher` path.
+  The user-visible inline display is now driven entirely by the LLM
+  rendering `[alt](image_url)` Markdown in its response, which claude.ai
+  renders as clickable image links natively. No server-side base64,
+  no images.pexels.com outbound fetches, no UI iframe.
+- **Videos**: replaced `preview_image_url` + `files[]` with the single
+  `video_url` (top-quality MP4) + `quality`. One actionable URL, ready
+  to hand to the user.
+
+**Defaults**:
+- `DEFAULT_PER_PAGE` 15 → 5. Most user briefs ask for 3-5 results; 15
+  was paying for ~10 entries the agent never showed.
+- `include_previews` parameter **dropped** entirely (server no longer
+  fetches thumbnails).
+- `aspect_ratio_tolerance` parameter dropped — 5 % is hardcoded.
+  Removing the knob shaves bytes off the inputSchema sent to the LLM.
+
+**Docstrings** rewritten to ~30 % of previous size. Each tool now has:
+USE WHEN (3 lines), DO NOT USE (1 line), filters (1 line), return shape
+(1 line), and the Markdown render instruction (1 line). The previous
+multi-paragraph "FILTER RECOVERY" / "HOW TO PRESENT RESULTS" sections
+were folded into one-liners pointing at `filter_diagnostics`.
+
+**`filter_diagnostics`** is now only emitted when `post_filter_count == 0
+and pre_filter_count > 0` (i.e. when the agent can actionably retry).
+Saves tokens on the happy path.
+
+**Estimated token savings**:
+- Tool list at conversation init: ~6 400 → ~2 500 tokens (-60 %).
+- Tool result per call: ~750 → ~120 tokens (-84 %).
+- A 4-call conversation: ~7 000 tokens saved cumulative.
+
+**Code cleanup** :
+- Deleted `src/pexels_mcp_server/previews.py` (~210 lines).
+- Deleted `src/pexels_mcp_server/templates/results_grid.html` (~310 lines).
+- Deleted `tests/test_previews.py` (~170 lines).
+- Trimmed `tests/test_formatters.py`, `tests/test_server_http.py`,
+  `tests/test_live_integration.py` of preview / MCP Apps assertions.
+- `formatters.py` halved (~200 lines instead of ~470).
+- `server.py` trimmed of preview-fetching helpers, MCP Apps resource
+  registration, and 4 tool handlers.
+- 145 unit tests + 5 live tests pass; coverage 77.9 %.
+
 ### Fixed (context overflow on claude.ai — 2026-05-19)
 - **`include_previews` default flipped from `true` to `false`.** Embedding 15 base64 thumbnails on every search call burned ~1300 vision tokens per call; 3-4 calls in a single chat overflowed claude.ai's conversation context with the dreaded "Conversation too long" error. The Markdown image syntax the LLM now uses (per the PR #20 docstring guidance) renders inline in claude.ai natively with zero tokens spent on embedded previews. Vision-pick is still available as an opt-in (`include_previews=true`) for callers that need it on top of Pexels' relevance ranking.
 
