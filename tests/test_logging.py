@@ -26,7 +26,8 @@ def test_json_formatter_emits_valid_json_with_expected_fields() -> None:
     assert payload["level"] == "INFO"
     assert payload["logger"] == "pexels_mcp_server.test"
     assert payload["msg"] == "hello world"
-    assert "ts" in payload and payload["ts"].endswith("+00:00")
+    assert "ts" in payload
+    assert payload["ts"].endswith("+00:00")
 
 
 def test_json_formatter_serializes_exception() -> None:
