@@ -78,6 +78,12 @@ class _SlidingWindowLimiter:
         self._window = window_seconds
         self._hits: dict[str, deque[float]] = defaultdict(deque)
         self._lock = asyncio.Lock()
+        # Periodic sweep of inactive keys to keep ``self._hits`` bounded under
+        # high-cardinality traffic. Without it, a bot rotating one-shot IPs
+        # would grow the dict forever. We sweep at most once per window —
+        # an O(N) scan that runs ~once/minute on a 60s window is cheap even
+        # at 100k tracked IPs.
+        self._last_sweep_at: float | None = None
 
     async def hit(self, key: str, *, now: float | None = None) -> tuple[bool, int]:
         """Record a hit for ``key``.
@@ -89,15 +95,36 @@ class _SlidingWindowLimiter:
         """
         async with self._lock:
             t = time.monotonic() if now is None else now
+            self._maybe_sweep_inactive(t)
             hits = self._hits[key]
             cutoff = t - self._window
-            while hits and hits[0] < cutoff:
+            # Use ``<=`` so a hit recorded at exactly ``now - window`` is
+            # treated as outside the window — otherwise a hit at t=0 still
+            # counts at t=60 with a 60 s window, which silently makes the
+            # effective limit stricter than the configured value.
+            while hits and hits[0] <= cutoff:
                 hits.popleft()
             if len(hits) >= self._max:
                 retry_after = max(1, int(hits[0] + self._window - t) + 1)
                 return False, retry_after
             hits.append(t)
             return True, 0
+
+    def _maybe_sweep_inactive(self, now: float) -> None:
+        """Drop tracking entries for IPs that have been quiet for a whole window.
+
+        Called under ``self._lock`` from inside ``hit``. Runs at most once per
+        ``window_seconds`` so the amortized cost is O(N/window) per hit, which
+        stays negligible compared to the network round-trip the request just
+        completed.
+        """
+        if self._last_sweep_at is not None and now - self._last_sweep_at < self._window:
+            return
+        self._last_sweep_at = now
+        cutoff = now - self._window
+        stale = [k for k, hits in self._hits.items() if not hits or hits[-1] <= cutoff]
+        for k in stale:
+            del self._hits[k]
 
 
 def _real_ip(scope: ASGIScope) -> str:

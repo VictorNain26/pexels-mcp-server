@@ -165,6 +165,34 @@ async def test_limiter_isolates_keys() -> None:
     assert (await limiter.hit("bob", now=0.0))[0] is False
 
 
+async def test_limiter_drops_inactive_keys_after_window() -> None:
+    """High-cardinality traffic must not grow the tracking dict forever:
+    after a full window with no hits, an IP's entry is reaped.
+    """
+    limiter = _SlidingWindowLimiter(max_hits=2, window_seconds=60.0)
+    # Hit from 100 distinct one-shot IPs.
+    for i in range(100):
+        await limiter.hit(f"ip-{i}", now=0.0)
+    assert len(limiter._hits) == 100
+    # 70s later, a fresh hit on a NEW IP triggers the periodic sweep.
+    # All 100 one-shot IPs are stale (their newest hit is at t=0, cutoff=10).
+    await limiter.hit("ip-new", now=70.0)
+    # The 100 one-shot entries are gone, only the new one remains.
+    assert len(limiter._hits) == 1
+    assert "ip-new" in limiter._hits
+
+
+async def test_limiter_releases_capacity_at_exact_window_edge() -> None:
+    """A hit recorded at t=0 with a 60 s window must be evicted at t=60,
+    not at t=61. Off-by-one would silently make the effective rate stricter
+    than the configured value.
+    """
+    limiter = _SlidingWindowLimiter(max_hits=1, window_seconds=60.0)
+    assert (await limiter.hit("ip", now=0.0))[0] is True
+    # At t=60 the first hit must be evicted, so the new hit succeeds.
+    assert (await limiter.hit("ip", now=60.0))[0] is True
+
+
 async def test_rate_limit_middleware_passes_under_limit() -> None:
     app = rate_limit_middleware(_passthrough, max_per_minute=3)
     headers = [(b"x-forwarded-for", b"203.0.113.5")]
