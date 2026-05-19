@@ -23,7 +23,10 @@ Designed around Anthropic's [Writing tools for agents](https://www.anthropic.com
 | `pexels_get_my_collections` | List the collections owned by the current Pexels API key holder. |
 | `pexels_get_collection_media` | Read the contents of a specific collection. |
 
-Every search/list tool returns a JSON envelope with `total_results`, `has_more`, `next_page` and a `rate_limit` block, so the agent can paginate and self-pace.
+Every search/list tool returns a structured response with two layers:
+
+1. A JSON envelope (`total_results`, `has_more`, `next_page`, `rate_limit`, per-result metadata) so an agent can paginate and self-pace.
+2. **Inline image previews** for each result — the server fetches the medium thumbnail from `images.pexels.com` and ships it as an MCP `ImageContent` block. Vision-capable clients (claude.ai, Claude Desktop, Cursor) render the thumbnails directly in the conversation and the model can do a true vision-based pick on top of Pexels' relevance ranking. Set `include_previews=false` on any tool call to opt out (bulk operations, token-sensitive workloads).
 
 ## How the agent picks the best image
 

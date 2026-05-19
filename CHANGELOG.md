@@ -4,6 +4,20 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ## [Unreleased]
 
+### Added (inline previews + vision pick — 2026-05-19)
+- **Inline thumbnails on every search/list tool.** `pexels_search_photos`, `pexels_curated_photos`, `pexels_get_photo`, `pexels_search_videos`, `pexels_popular_videos`, `pexels_get_video` and `pexels_get_collection_media` now return a list of MCP content blocks: the JSON envelope as the first `TextContent`, then per-result `TextContent` caption + `ImageContent` (medium thumbnail fetched from `images.pexels.com`). Vision-capable MCP clients render the images inline; an agent can do a true vision-based pick instead of relying on the `alt` text alone. Opt-out per call with `include_previews=false` for bulk / token-sensitive workloads.
+- New module `src/pexels_mcp_server/previews.py` implementing `PreviewFetcher`: bounded-concurrency (semaphore 12), per-fetch timeout (5 s), oversize cap (500 KB), MIME-type whitelist (`image/*`), host allowlist (`images.pexels.com` only — SSRF surface), FIFO LRU cache (256 entries, 10 min TTL). Failures are best-effort: a missing or oversize thumbnail degrades to caption-only, the rest of the response still ships.
+- Rich-content builders in `formatters.py`: `build_photo_list_rich`, `build_video_list_rich`, `build_single_photo_rich`, `build_single_video_rich`, `build_collection_media_rich`. Each returns `list[TextContent | ImageContent]` with the JSON envelope embedded as the first block so any agent that ignores images still gets the full structured response.
+- `include_previews: bool` field on every search/list/get param schema. Default `True` — production UX out of the box. Disable per-call when you want the lightweight JSON-only response.
+- `PreviewFetcher` is owned by the FastMCP lifespan (one fetcher per process). Closed cleanly alongside the `PexelsClient` on shutdown.
+- `tests/test_previews.py` — 16 unit tests covering happy path, allowlist (5 hostile URL shapes), failure modes (404, network error, oversize, wrong MIME), cache reuse, FIFO eviction, TTL expiry.
+- 14 new tests in `tests/test_formatters.py` for the rich-content builders + the preview URL pickers.
+- 2 new schema tests covering the `include_previews` default and override.
+
+### Changed
+- `PRIVACY.md` lists `images.pexels.com` as an outbound target alongside `api.pexels.com`, with the thumbnail cache lifecycle documented.
+- `README.md` tool table mentions the inline preview default.
+
 ### Changed (UX — 2026-05-19)
 - Access-token TTL bumped from **1 hour** to **30 days** in `auth.py::_ACCESS_TOKEN_TTL_SECONDS`. Re-pasting the Pexels key every hour inside a long conversation was the wrong default: the bound key is dropped when the token expires, so the user had to walk `/setup` again every hour. The threat model for this server (Pexels free tier, user-regenerable keys, no PII / no financial access) makes the longer leak-exposure window acceptable. The in-memory token store is wiped on every Koyeb restart anyway, so the effective TTL is min(30 d, time-until-restart), and Koyeb rolling deploys cap that to about a week in practice.
 - README and PRIVACY docs updated to match.

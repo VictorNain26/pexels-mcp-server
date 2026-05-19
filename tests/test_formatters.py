@@ -1,17 +1,30 @@
-"""Formatter tests: validate the token-lean JSON projections."""
+"""Formatter tests: validate the token-lean JSON projections and the rich
+content builders that ship MCP ``ImageContent`` blocks alongside the JSON
+envelope."""
 
 from __future__ import annotations
 
 import json
 
+from mcp.types import ImageContent, TextContent
+
 from pexels_mcp_server.formatters import (
+    build_collection_media_rich,
+    build_photo_list_rich,
+    build_single_photo_rich,
+    build_single_video_rich,
+    build_video_list_rich,
+    collection_item_preview_url,
     format_collection_media,
     format_photo_list,
     format_single_photo,
     format_video_list,
+    photo_preview_url,
     photo_to_json,
+    video_preview_url,
     video_to_json,
 )
+from pexels_mcp_server.previews import PreviewImage
 
 _FULL_PHOTO = {
     "id": 1,
@@ -179,3 +192,149 @@ def test_format_collection_media_splits_photos_and_videos() -> None:
     assert parsed["id"] == "abc"
     assert len(parsed["photos"]) == 1
     assert len(parsed["videos"]) == 1
+
+
+# --- preview URL pickers --------------------------------------------------
+
+
+def test_photo_preview_url_returns_medium() -> None:
+    assert photo_preview_url(_FULL_PHOTO) == "https://x/medium.jpg"
+
+
+def test_photo_preview_url_returns_none_when_missing() -> None:
+    assert photo_preview_url({"src": {}}) is None
+    assert photo_preview_url({}) is None
+
+
+def test_video_preview_url_returns_image_field() -> None:
+    assert video_preview_url(_FULL_VIDEO) == "https://x/preview.jpg"
+
+
+def test_video_preview_url_returns_none_when_missing() -> None:
+    assert video_preview_url({}) is None
+
+
+def test_collection_item_preview_url_dispatches_on_type() -> None:
+    photo = {**_FULL_PHOTO, "type": "Photo"}
+    video = {**_FULL_VIDEO, "type": "Video"}
+    assert collection_item_preview_url(photo) == "https://x/medium.jpg"
+    assert collection_item_preview_url(video) == "https://x/preview.jpg"
+
+
+# --- rich content builders -----------------------------------------------
+
+
+def _preview() -> PreviewImage:
+    return PreviewImage(
+        data_base64="AAAA",
+        mime_type="image/jpeg",
+        source_url="https://images.pexels.com/photos/1/a.jpeg",
+    )
+
+
+def test_build_photo_list_rich_interleaves_captions_and_images() -> None:
+    payload = {
+        "page": 1,
+        "per_page": 2,
+        "total_results": 2,
+        "photos": [_FULL_PHOTO, _FULL_PHOTO],
+    }
+    blocks = build_photo_list_rich(payload, {}, [_preview(), _preview()], "json")
+    # Layout: envelope text + (caption text + image) x 2 = 5 blocks total
+    assert len(blocks) == 5
+    assert isinstance(blocks[0], TextContent)
+    assert "total_results" in blocks[0].text  # envelope JSON
+    assert isinstance(blocks[1], TextContent)
+    assert blocks[1].text.startswith("#1 — id=1")
+    assert isinstance(blocks[2], ImageContent)
+    assert blocks[2].data == "AAAA"
+    assert blocks[2].mimeType == "image/jpeg"
+
+
+def test_build_photo_list_rich_handles_missing_previews() -> None:
+    """When a fetch fails, the caption ships without the ImageContent."""
+    payload = {
+        "page": 1,
+        "per_page": 2,
+        "total_results": 2,
+        "photos": [_FULL_PHOTO, _FULL_PHOTO],
+    }
+    blocks = build_photo_list_rich(payload, {}, [_preview(), None], "json")
+    # Photo 1: caption + image. Photo 2: caption only. Total: envelope + 3.
+    assert len(blocks) == 4
+    types = [type(b).__name__ for b in blocks]
+    assert types == ["TextContent", "TextContent", "ImageContent", "TextContent"]
+
+
+def test_build_photo_list_rich_handles_empty_photos() -> None:
+    payload = {"page": 1, "per_page": 0, "total_results": 0, "photos": []}
+    blocks = build_photo_list_rich(payload, {}, [], "json")
+    assert len(blocks) == 1  # just the envelope
+
+
+def test_build_video_list_rich_interleaves_captions_and_images() -> None:
+    payload = {
+        "page": 1,
+        "per_page": 1,
+        "total_results": 1,
+        "videos": [_FULL_VIDEO],
+    }
+    blocks = build_video_list_rich(payload, {}, [_preview()], "json")
+    assert len(blocks) == 3  # envelope + caption + image
+    assert isinstance(blocks[1], TextContent)
+    assert "30s" in blocks[1].text
+    assert isinstance(blocks[2], ImageContent)
+
+
+def test_build_single_photo_rich_with_preview() -> None:
+    blocks = build_single_photo_rich(_FULL_PHOTO, {}, _preview(), "json")
+    assert len(blocks) == 2
+    assert isinstance(blocks[0], TextContent)
+    assert isinstance(blocks[1], ImageContent)
+
+
+def test_build_single_photo_rich_without_preview() -> None:
+    blocks = build_single_photo_rich(_FULL_PHOTO, {}, None, "json")
+    assert len(blocks) == 1
+    assert isinstance(blocks[0], TextContent)
+
+
+def test_build_single_video_rich_with_preview() -> None:
+    blocks = build_single_video_rich(_FULL_VIDEO, {}, _preview(), "json")
+    assert len(blocks) == 2
+    assert isinstance(blocks[1], ImageContent)
+
+
+def test_build_collection_media_rich_dispatches_on_type() -> None:
+    payload = {
+        "id": "abc",
+        "page": 1,
+        "per_page": 2,
+        "total_results": 2,
+        "media": [
+            {**_FULL_PHOTO, "type": "Photo"},
+            {**_FULL_VIDEO, "type": "Video"},
+        ],
+    }
+    blocks = build_collection_media_rich(payload, {}, [_preview(), _preview()], "json")
+    # envelope + (caption + image) x 2 = 5
+    assert len(blocks) == 5
+    # Photo caption mentions dimensions, video caption mentions seconds.
+    assert "1920x1080" in blocks[1].text  # type: ignore[union-attr]
+    assert "30s" in blocks[3].text  # type: ignore[union-attr]
+
+
+def test_build_rich_preserves_envelope_for_agents() -> None:
+    """The first TextContent must be a parseable JSON envelope so an agent
+    that cannot render images still gets the full structured response."""
+    payload = {
+        "page": 1,
+        "per_page": 1,
+        "total_results": 1,
+        "photos": [_FULL_PHOTO],
+    }
+    blocks = build_photo_list_rich(payload, {"remaining": 200}, [_preview()], "json")
+    envelope = json.loads(blocks[0].text)  # type: ignore[union-attr]
+    assert envelope["total_results"] == 1
+    assert envelope["photos"][0]["id"] == 1
+    assert envelope["rate_limit"]["remaining"] == 200
