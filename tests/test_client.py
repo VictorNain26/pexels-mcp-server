@@ -224,3 +224,93 @@ async def test_validate_key_raises_on_persistent_5xx(httpx_mock: HTTPXMock) -> N
     async with PexelsClient() as client:
         with pytest.raises(PexelsAPIError):
             await client.validate_key("any-key")
+
+
+# --- discovery endpoints (curated / popular / featured) -------------------
+
+
+async def test_get_curated_photos_hits_v1_curated(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(
+        url=f"{BASE_URL}/v1/curated?page=1&per_page=5",
+        json={"page": 1, "per_page": 5, "total_results": 8000, "photos": []},
+        headers=_rate_headers(),
+        match_headers={"Authorization": "k"},
+    )
+    async with PexelsClient() as client:
+        body, _ = await client.get_curated_photos(api_key="k", page=1, per_page=5)
+    assert body["total_results"] == 8000
+
+
+async def test_get_popular_videos_passes_native_filters(httpx_mock: HTTPXMock) -> None:
+    """Native min_*/duration params must be forwarded as query string — they
+    are server-side filters on Pexels' end, not post-hoc."""
+    httpx_mock.add_response(
+        url=(
+            f"{BASE_URL}/v1/videos/popular"
+            "?min_width=1920&min_height=1080&min_duration=10&max_duration=30"
+            "&page=1&per_page=5"
+        ),
+        json={"page": 1, "per_page": 5, "total_results": 0, "videos": []},
+        headers=_rate_headers(),
+        match_headers={"Authorization": "k"},
+    )
+    async with PexelsClient() as client:
+        body, _ = await client.get_popular_videos(
+            api_key="k",
+            min_width=1920,
+            min_height=1080,
+            min_duration=10,
+            max_duration=30,
+            page=1,
+            per_page=5,
+        )
+    assert body["videos"] == []
+
+
+async def test_get_popular_videos_drops_none_filters(httpx_mock: HTTPXMock) -> None:
+    """None-valued filters must not pollute the query string."""
+    httpx_mock.add_response(
+        url=f"{BASE_URL}/v1/videos/popular?page=1&per_page=15",
+        json={"page": 1, "per_page": 15, "total_results": 0, "videos": []},
+        headers=_rate_headers(),
+    )
+    async with PexelsClient() as client:
+        await client.get_popular_videos(api_key="k")
+
+
+async def test_get_featured_collections_returns_metadata(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(
+        url=f"{BASE_URL}/v1/collections/featured?page=1&per_page=15",
+        json={
+            "page": 1,
+            "per_page": 15,
+            "total_results": 30,
+            "collections": [
+                {
+                    "id": "abc123",
+                    "title": "Nature",
+                    "description": "Green and serene.",
+                    "private": False,
+                    "media_count": 200,
+                    "photos_count": 150,
+                    "videos_count": 50,
+                }
+            ],
+        },
+        headers=_rate_headers(),
+        match_headers={"Authorization": "k"},
+    )
+    async with PexelsClient() as client:
+        body, _ = await client.get_featured_collections(api_key="k")
+    assert body["collections"][0]["id"] == "abc123"
+    assert body["collections"][0]["photos_count"] == 150
+
+
+async def test_discovery_endpoints_reject_empty_api_key() -> None:
+    async with PexelsClient() as client:
+        with pytest.raises(PexelsAuthError):
+            await client.get_curated_photos(api_key="")
+        with pytest.raises(PexelsAuthError):
+            await client.get_popular_videos(api_key=None)
+        with pytest.raises(PexelsAuthError):
+            await client.get_featured_collections(api_key="   ")

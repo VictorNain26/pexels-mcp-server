@@ -203,13 +203,15 @@ def test_resource_templates_match_pexels_uri_scheme() -> None:
 
 
 def test_prompts_registry_exposes_marketing_workflows() -> None:
-    """Three reusable prompts surfaced in the claude.ai connector menu:
-    find_hero_image, find_broll, find_brand_match. Each one cuts an
-    agent round-trip on parameter clarification."""
+    """Two reusable prompts surfaced in the claude.ai connector menu:
+    find_hero_image, find_broll. Each one cuts an agent round-trip on
+    parameter clarification. ``find_brand_match`` was dropped because
+    ``find_hero_image`` already accepts an optional ``brand_color`` —
+    carrying a near-duplicate variant doubled the menu noise."""
     from pexels_mcp_server import server as module
 
     names = {p.name for p in module.mcp._prompt_manager.list_prompts()}
-    assert names == {"find_hero_image", "find_broll", "find_brand_match"}
+    assert names == {"find_hero_image", "find_broll"}
 
 
 async def test_prompt_find_hero_image_renders_actionable_brief() -> None:

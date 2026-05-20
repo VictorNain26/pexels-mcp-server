@@ -47,8 +47,8 @@ re-explanation into this file or into a code comment.
   `ToolAnnotations` with `title` + `readOnlyHint`. The Anthropic Connector
   Directory rejects ~30 % of submissions for missing these.
 - **Three MCP primitives, all read-only.** This server ships the full
-  set: 5 tools (model-controlled), 3 resources (URI templates per RFC
-  6570), 3 prompts (claude.ai connector menu). See `README.md` for the
+  set: 8 tools (model-controlled), 3 resources (URI templates per RFC
+  6570), 2 prompts (claude.ai connector menu). See `README.md` for the
   surface. Future primitives go through the same trim discipline — any
   type-level docstring leaks into `$defs` of every referencing schema.
 - **No hand-rolled OAuth, no hand-rolled bearer.** The MCP SDK owns the auth

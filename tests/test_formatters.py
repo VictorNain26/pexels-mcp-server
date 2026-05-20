@@ -339,3 +339,55 @@ def test_filter_by_dimensions_drops_items_without_dims() -> None:
 def test_filter_by_dimensions_noop_when_no_filters() -> None:
     items = [_item(100, 100), _item(200, 200)]
     assert filter_by_dimensions(items) == items
+
+
+# --- featured collections (metadata, not media) --------------------------
+
+
+_FULL_COLLECTION = {
+    "id": "abc123",
+    "title": "Nature",
+    "description": "Green and serene scenes.",
+    "private": False,
+    "media_count": 200,
+    "photos_count": 150,
+    "videos_count": 50,
+    # Unrelated fields Pexels might add later — should be ignored.
+    "owner": "pexels",
+    "created_at": "2024-01-01",
+}
+
+
+def test_collection_to_json_keeps_only_metadata_fields() -> None:
+    from pexels_mcp_server.formatters import collection_to_json
+
+    out = collection_to_json(_FULL_COLLECTION)
+    assert set(out) == {
+        "id",
+        "title",
+        "description",
+        "private",
+        "media_count",
+        "photos_count",
+        "videos_count",
+    }
+    assert "owner" not in out
+    assert "created_at" not in out
+
+
+def test_format_featured_collections_returns_minimal_envelope() -> None:
+    from pexels_mcp_server.formatters import format_featured_collections
+
+    payload = {
+        "page": 1,
+        "per_page": 15,
+        "total_results": 30,
+        "next_page": "https://api.pexels.com/v1/collections/featured?page=2",
+        "collections": [_FULL_COLLECTION],
+    }
+    out = format_featured_collections(payload)
+    assert out["total_results"] == 30
+    assert out["has_more"] is True
+    assert out["next_page"] == 2
+    assert len(out["collections"]) == 1
+    assert out["collections"][0]["id"] == "abc123"

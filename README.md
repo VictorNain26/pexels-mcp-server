@@ -19,7 +19,7 @@ SEP-1303, OAuth 2.1 + RFC 9728 + RFC 7591 DCR + PKCE for the HTTP transport.
 
 ## What the agent gets
 
-### 5 tools (model-controlled)
+### 8 tools (model-controlled)
 
 | Tool | Purpose |
 |---|---|
@@ -28,6 +28,9 @@ SEP-1303, OAuth 2.1 + RFC 9728 + RFC 7591 DCR + PKCE for the HTTP transport.
 | `pexels_search_videos` | Search videos. Same filters minus `color`. |
 | `pexels_get_video` | Fetch one video by id. |
 | `pexels_get_collection_media` | Read photos + videos in a Pexels collection. |
+| `pexels_get_curated_photos` | Pexels' editor-curated daily photo feed. Post-hoc dim/aspect filters. |
+| `pexels_get_popular_videos` | Trending video feed. Native `min_width` / `min_height` / `min_duration` / `max_duration` (Pexels-side), post-hoc `aspect_ratio`. |
+| `pexels_get_featured_collections` | Discover curated collection ids (metadata only — pipe an id into `pexels_get_collection_media`). |
 
 ### 3 resources (app-controlled, URI templates)
 
@@ -40,13 +43,12 @@ SEP-1303, OAuth 2.1 + RFC 9728 + RFC 7591 DCR + PKCE for the HTTP transport.
 A user pasting a `pexels.com` URL into a chat lets the host attach the
 content directly without the agent invoking a tool.
 
-### 3 prompts (user-controlled, claude.ai connector menu)
+### 2 prompts (user-controlled, claude.ai connector menu)
 
 | Prompt | Arguments | Use case |
 |---|---|---|
 | `find_hero_image` | `topic`, `orientation?`, `brand_color?`, `aspect_ratio?` | Marketing hero with brand fit |
-| `find_broll` | `topic`, `orientation?`, `resolution?` | B-roll, reels, hero loops |
-| `find_brand_match` | `query`, `brand_hex_color` | Photo matching a brand hex |
+| `find_broll` | `topic`, `orientation?`, `resolution?`, `aspect_ratio?` | B-roll, reels, hero loops |
 
 Each prompt renders a short user-message brief that names the tool, the
 filters and the attribution requirement — the agent acts in one turn

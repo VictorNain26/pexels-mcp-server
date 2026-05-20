@@ -113,6 +113,25 @@ class SingleVideoResult(TypedDict):
     video: VideoProjection
 
 
+class CollectionMetadata(TypedDict):
+    id: str | None
+    title: str | None
+    description: str | None
+    private: bool | None
+    media_count: int | None
+    photos_count: int | None
+    videos_count: int | None
+
+
+class _FeaturedCollectionsRequired(_SearchListBase):
+    collections: list[CollectionMetadata]
+
+
+class FeaturedCollectionsResult(_FeaturedCollectionsRequired, total=False):
+    total_results: int
+    next_page: int
+
+
 def photo_to_json(photo: dict[str, Any]) -> PhotoProjection:
     """Project a Pexels photo to the minimal LLM-actionable shape."""
     src = photo.get("src") or {}
@@ -214,6 +233,30 @@ def format_single_photo(payload: dict[str, Any]) -> SinglePhotoResult:
 
 def format_single_video(payload: dict[str, Any]) -> SingleVideoResult:
     return {"video": video_to_json(payload)}
+
+
+def collection_to_json(coll: dict[str, Any]) -> CollectionMetadata:
+    """Project a Pexels collection metadata item to the LLM-actionable shape."""
+    return {
+        "id": coll.get("id"),
+        "title": coll.get("title"),
+        "description": coll.get("description"),
+        "private": coll.get("private"),
+        "media_count": coll.get("media_count"),
+        "photos_count": coll.get("photos_count"),
+        "videos_count": coll.get("videos_count"),
+    }
+
+
+def format_featured_collections(payload: dict[str, Any]) -> FeaturedCollectionsResult:
+    items = payload.get("collections") or []
+    return cast(
+        FeaturedCollectionsResult,
+        {
+            **_pagination_block(payload, len(items)),
+            "collections": [collection_to_json(c) for c in items],
+        },
+    )
 
 
 # --------------------------------------------------------- post-hoc filter

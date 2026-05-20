@@ -290,3 +290,77 @@ class CollectionMediaParams(_PostHocFilters):
         if not _COLLECTION_ID_RE.match(value):
             raise ValueError("collection_id must contain only letters, digits, '-' and '_'.")
         return value
+
+
+class CuratedPhotosParams(_PostHocFilters):
+    """Editor-curated photo feed: pagination + all-post-hoc dim filters.
+
+    The ``/v1/curated`` endpoint accepts only ``page`` / ``per_page`` —
+    so the dim filters are post-hoc identical to ``search_photos``.
+    """
+
+
+class FeaturedCollectionsParams(Pagination):
+    """Featured collections directory: pagination only.
+
+    The ``/v1/collections/featured`` endpoint exposes no filters; the
+    response carries collection metadata (id, title, counts), not media,
+    so dim / aspect_ratio filters do not apply.
+    """
+
+
+# Popular-video duration cap. Pexels video durations sit comfortably under
+# an hour; 24h is a defensive ceiling that rejects obvious typos without
+# annoying legitimate callers.
+_MAX_VIDEO_DURATION_S = 86_400
+
+
+class PopularVideosParams(Pagination):
+    """Trending video feed.
+
+    ``min_width`` / ``min_height`` / ``min_duration`` / ``max_duration``
+    are *native* Pexels params (the API filters server-side, no
+    oversampling needed). ``aspect_ratio`` stays post-hoc — Pexels has no
+    native aspect_ratio filter on this endpoint.
+    """
+
+    min_width: int | None = Field(
+        default=None,
+        ge=1,
+        le=_MAX_DIMENSION_PX,
+        description="Minimum native width in pixels (Pexels-side filter).",
+    )
+    min_height: int | None = Field(
+        default=None,
+        ge=1,
+        le=_MAX_DIMENSION_PX,
+        description="Minimum native height in pixels (Pexels-side filter).",
+    )
+    min_duration: int | None = Field(
+        default=None,
+        ge=1,
+        le=_MAX_VIDEO_DURATION_S,
+        description="Minimum video duration in seconds (Pexels-side filter).",
+    )
+    max_duration: int | None = Field(
+        default=None,
+        ge=1,
+        le=_MAX_VIDEO_DURATION_S,
+        description="Maximum video duration in seconds (Pexels-side filter).",
+    )
+    aspect_ratio: str | None = _aspect_ratio_field()
+
+    @field_validator("aspect_ratio")
+    @classmethod
+    def _check_aspect_ratio(cls, value: str | None) -> str | None:
+        return _validate_aspect_ratio(value)
+
+    @model_validator(mode="after")
+    def _check_duration_range(self) -> PopularVideosParams:
+        if (
+            self.min_duration is not None
+            and self.max_duration is not None
+            and self.min_duration > self.max_duration
+        ):
+            raise ValueError("min_duration must not exceed max_duration.")
+        return self
