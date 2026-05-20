@@ -52,6 +52,36 @@ re-explanation into this file or into a code comment.
   `REDIS_URL` — the import path in `storage.py` is lazy so a stdio install
   never pays the import cost. Anything new needs a justification in the PR.
 
+## Conscious trade-offs (NOT bugs)
+
+These are deliberate design choices. Do **not** "fix" them without
+reading the rationale first.
+
+- **`stateless_http=True` + `json_response=True`** on the FastMCP instance.
+  Per the MCP Advanced Topics course, this disables sampling, the
+  long-lived GET SSE channel, `ctx.report_progress()`, `ctx.info()`,
+  and resource subscriptions. We accept that to scale Koyeb horizontally
+  with no sticky sessions. **If you ever need notifications back to the
+  client, flip both flags and accept the sticky-session cost.**
+- **Single-replica only.** The in-process rate limiter
+  (`transport.py::_SlidingWindowLimiter`), the OAuth provider's pending
+  setups, the auth codes, and the code→key transitional binding all live
+  in module-local dicts (`auth.py::_pending_setups`, `_auth_codes`,
+  `_code_to_key`). A user who lands on replica B after `/setup` on
+  replica A gets a 404. The persistent `TokenStore` covers DCR clients +
+  access tokens + bound Pexels keys; everything else is intentionally
+  process-local. Scaling out requires moving those three dicts into
+  Redis too — not done because we are well under one-replica capacity.
+- **No refresh tokens.** Clients re-walk OAuth on access-token expiry.
+  Smaller wire surface, one less code path to maintain.
+- **`max_per_minute=60` rate limit per IP, not per token.** A token-bound
+  cap would require sticky sessions or a Redis counter. Per-IP is
+  sufficient for the eco-nano tier and avoids both.
+- **SDK monkey-patch in `_sdk_patches.py`.** `FuncMetadata.convert_result`
+  is overridden to pass `exclude_unset=True` to `model_dump`. This is the
+  only place in the repo allowed to mutate third-party state — see the
+  module docstring for the upstream tracking link.
+
 ## Day-to-day commands
 
 ```bash
