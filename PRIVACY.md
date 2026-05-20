@@ -1,6 +1,6 @@
 # Privacy Policy
 
-_Last updated: 2026-05-19. Effective for `pexels-mcp-server` v0.6.0 and later._
+_Last updated: 2026-05-20. Effective for `pexels-mcp-server` v0.6.0 and later._
 
 `pexels-mcp-server` is a Model Context Protocol (MCP) server that proxies
 read-only requests to the public [Pexels REST API](https://www.pexels.com/api/).
@@ -9,23 +9,27 @@ and what it does **not** do.
 
 ## 1. What the server processes
 
-When an MCP client calls one of the tools the server exposes (see [README](README.md))
-the server receives, for the duration of a single request:
+The server exposes the three MCP primitives — tools, resources, prompts
+(see [README](README.md)). All three are read-only.
 
-- The **tool arguments** sent by the agent (search query, photo or video id,
-  pagination, filters, locale, etc.).
-- The caller's **Pexels API key**, either submitted once during the OAuth
-  setup step and bound server-side to the issued access token, or sent
-  per-request as an `X-Pexels-Api-Key` HTTP header (Streamable HTTP
-  transport), or read from the `PEXELS_API_KEY` environment variable
-  (stdio transport only).
-- The **Bearer access token** issued by the server's own `/token` endpoint
-  (Streamable HTTP transport). The token is an opaque random string held
-  in process memory; it is not a user identity, only a proof that the
-  client walked through the spec-mandated OAuth handshake.
+For every call to a **tool** or a **resource**, the server receives — for the
+duration of one request only:
 
-The server forwards the search/lookup parameters and the caller's Pexels API
-key to `https://api.pexels.com`. The Pexels response is then projected into
+- The **call arguments**: a search query, photo / video id, collection id,
+  pagination, filters, locale.
+- The caller's **Pexels API key**, either bound to the access token during
+  the BYOK `/setup` step, supplied per-request via the `X-Pexels-Api-Key`
+  header (Streamable HTTP), or read from `PEXELS_API_KEY` (stdio only).
+- The **Bearer access token** issued by the server's own `/token`
+  endpoint. Opaque random string, no user identity — only a proof that
+  the client walked the MCP OAuth 2.1 handshake.
+
+For **prompts**, no Pexels call is made and no API key is read: prompts are
+pure template renderers that return a brief string to the agent. The server
+sees only the prompt arguments (e.g. a topic string, a brand color).
+
+The server forwards the search / lookup parameters and the caller's Pexels
+API key to `https://api.pexels.com`. The Pexels response is projected into
 a token-lean JSON envelope and returned to the MCP client.
 
 ## 2. What the server stores
@@ -72,9 +76,11 @@ counterproductive.
 
 ### 2.c. Always — never persisted
 
-- **Tool arguments and Pexels responses** live in process memory for the
-  duration of a single request and are then released. They are never
-  written to Redis, disk, or a log line.
+- **Tool / resource arguments and Pexels responses** live in process
+  memory for the duration of a single request and are then released.
+  They are never written to Redis, disk, or a log line.
+- **Prompt arguments** are template inputs only; the server never
+  forwards them anywhere and never persists them.
 - **The `X-Pexels-Api-Key` request header** (fallback path) is read from
   the request scope on every call and never retained.
 
@@ -105,7 +111,7 @@ The server **never** logs:
 
 - The Pexels API key (header or env var).
 - The Bearer token.
-- Tool arguments.
+- Tool / resource / prompt arguments.
 - Pexels response bodies.
 
 ## 4. Third parties

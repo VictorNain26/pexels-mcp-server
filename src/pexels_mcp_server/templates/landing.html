@@ -114,7 +114,7 @@
 <body>
     <header>
         <h1>Pexels MCP server <span class="badge">PUBLIC</span></h1>
-        <p class="tagline">Free Pexels photo and video search exposed as a Model Context Protocol server. Five read-only tools, OAuth 2.1, bring-your-own Pexels API key.</p>
+        <p class="tagline">Free Pexels photo and video search as a Model Context Protocol server. 5 tools + 3 resources + 3 prompts, OAuth 2.1, bring-your-own Pexels API key.</p>
     </header>
 
     <main>
@@ -130,13 +130,14 @@
         <h2>Your Pexels quota stays yours</h2>
         <p>Your Pexels API key is bound to your OAuth access token and forwarded to <code>api.pexels.com</code> on every tool call. It lives only in this server's memory, never on disk, and is dropped on token expiry (30 days) or on the next server restart. Every request counts against <em>your</em> Pexels quota (200/hour on the free tier), not anyone else's.</p>
 
-        <h2>Tools exposed</h2>
+        <h2>What this server exposes</h2>
+        <p>The three MCP primitives, all read-only and aligned with the <a href="https://modelcontextprotocol.io/specification/2025-11-25" target="_blank" rel="noopener">MCP spec 2025-11-25</a>.</p>
         <ul>
-            <li><strong>Photos</strong>: <code>pexels_search_photos</code>, <code>pexels_get_photo</code></li>
-            <li><strong>Videos</strong>: <code>pexels_search_videos</code>, <code>pexels_get_video</code></li>
-            <li><strong>Collections</strong>: <code>pexels_get_collection_media</code></li>
+            <li><strong>5 tools</strong> (model-controlled): <code>pexels_search_photos</code>, <code>pexels_get_photo</code>, <code>pexels_search_videos</code>, <code>pexels_get_video</code>, <code>pexels_get_collection_media</code>.</li>
+            <li><strong>3 resources</strong> (URI templates): <code>pexels://photo/{id}</code>, <code>pexels://video/{id}</code>, <code>pexels://collection/{id}</code>.</li>
+            <li><strong>3 prompts</strong>: <code>find_hero_image</code>, <code>find_broll</code>, <code>find_brand_match</code> — surfaced in the claude.ai connector menu.</li>
         </ul>
-        <p>Every tool is read-only and returns structured JSON with photographer / uploader credit so the agent can render the user-facing answer with the mandatory attribution.</p>
+        <p>Every result includes <code>photographer</code> / <code>uploader_name</code> credit so the agent renders the user-facing answer with the mandatory attribution.</p>
 
         <h2>Other MCP clients</h2>
         <p>Same URL works with Claude Desktop (Settings &rarr; Connectors &rarr; Add), Claude Code (<code>claude mcp add</code> with <code>--transport http</code>), and the official MCP Inspector. OAuth discovery is automatic via <a href="https://datatracker.ietf.org/doc/html/rfc9728" target="_blank" rel="noopener">RFC 9728</a> protected-resource metadata. Power-user setups can skip <code>/setup</code> by sending the Pexels key as an <code>X-Pexels-Api-Key</code> header on every call instead.</p>
