@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
+import re
 from datetime import datetime, timezone
 from typing import Any
 
@@ -58,11 +59,41 @@ class PexelsRateLimitError(RuntimeError):
 
 
 class PexelsAPIError(RuntimeError):
-    """Raised for any other non-success response from Pexels."""
+    """Raised for any other non-success response from Pexels.
+
+    The upstream response body is *sanitized* before reaching the LLM:
+    control characters are stripped, the message is truncated to 200
+    chars, and anything that looks like a bearer-shaped token (32+
+    consecutive alphanumerics) is redacted. This stops a malformed
+    upstream payload — or a hostile mirror — from echoing the caller's
+    Pexels key, stack traces, or hidden control sequences into the
+    agent context.
+    """
 
     def __init__(self, status_code: int, message: str) -> None:
-        super().__init__(f"Pexels API error {status_code}: {message}")
+        super().__init__(f"Pexels API error {status_code}: {_sanitize_error_text(message)}")
         self.status_code = status_code
+
+
+_TOKEN_SHAPED_RE = re.compile(r"[A-Za-z0-9]{32,}")
+
+
+def _sanitize_error_text(raw: str, *, max_length: int = 200) -> str:
+    """Project an arbitrary upstream body to a one-line agent-safe string."""
+    if not raw:
+        return ""
+    # Drop non-printable control chars; collapse any whitespace run to one
+    # space. Keeps Latin / accented characters that ``isprintable`` accepts.
+    no_control = "".join(c if c.isprintable() else " " for c in raw)
+    cleaned = " ".join(no_control.split())
+    # Redact anything that smells like a token (matches Pexels' 56-char
+    # API keys plus most bearer formats). Belt-and-braces: even if the
+    # upstream never echoes the caller's key, a future regression cannot
+    # leak one through this path.
+    cleaned = _TOKEN_SHAPED_RE.sub("<redacted>", cleaned)
+    if len(cleaned) > max_length:
+        cleaned = cleaned[: max_length - 1].rstrip() + "…"
+    return cleaned
 
 
 _MISSING_KEY_MESSAGE = (

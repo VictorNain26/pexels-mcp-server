@@ -17,10 +17,15 @@ from __future__ import annotations
 
 from typing import Any, TypedDict, cast
 
+# Docstrings deliberately omitted from the TypedDicts below: each one
+# would surface as ``description: ...`` in every tool's outputSchema
+# $defs (PhotoProjection is referenced by 3 tools, VideoProjection by 3
+# tools, FilterDiagnostics by 4 — so a one-liner docstring becomes 4-8
+# duplicated chars in list_tools). The shape is self-documenting via
+# field names; the dev-facing intent lives in the module docstring.
+
 
 class PhotoProjection(TypedDict):
-    """Minimal LLM-actionable shape for a Pexels photo."""
-
     id: int | None
     alt: str | None
     page_url: str | None
@@ -32,8 +37,6 @@ class PhotoProjection(TypedDict):
 
 
 class VideoProjection(TypedDict):
-    """Minimal LLM-actionable shape for a Pexels video (top file only)."""
-
     id: int | None
     page_url: str | None
     duration_seconds: int | None
@@ -46,8 +49,6 @@ class VideoProjection(TypedDict):
 
 
 class FilterDiagnostics(TypedDict):
-    """Diagnostic block surfaced when a post-hoc filter wiped every candidate."""
-
     applied_filters: dict[str, Any]
     pre_filter_count: int
     post_filter_count: int
@@ -55,8 +56,7 @@ class FilterDiagnostics(TypedDict):
 
 
 class _SearchListBase(TypedDict):
-    """Required pagination fields shared by every search/list envelope."""
-
+    # Required pagination fields shared by every search/list envelope.
     page: int
     per_page: int
     count: int
@@ -76,11 +76,6 @@ class _PhotoListRequired(_SearchListBase):
 
 
 class PhotoListResult(_PhotoListRequired, total=False):
-    """``pexels_search_photos`` return envelope. Optional fields are only
-    emitted when the upstream payload carries them (``total_results``,
-    ``next_page``) or the post-hoc filter wiped the page
-    (``filter_diagnostics``)."""
-
     total_results: int
     next_page: int
     filter_diagnostics: FilterDiagnostics
@@ -91,8 +86,6 @@ class _VideoListRequired(_SearchListBase):
 
 
 class VideoListResult(_VideoListRequired, total=False):
-    """``pexels_search_videos`` return envelope."""
-
     total_results: int
     next_page: int
     filter_diagnostics: FilterDiagnostics
@@ -105,24 +98,18 @@ class _CollectionMediaRequired(_SearchListBase):
 
 
 class CollectionMediaResult(_CollectionMediaRequired, total=False):
-    """``pexels_get_collection_media`` return envelope. ``photos`` and
-    ``videos`` are always present (possibly empty) so the agent can
-    iterate both lists unconditionally."""
-
+    # ``photos`` + ``videos`` are always present (possibly empty) so the
+    # agent can iterate both lists unconditionally regardless of ``type``.
     total_results: int
     next_page: int
     filter_diagnostics: FilterDiagnostics
 
 
 class SinglePhotoResult(TypedDict):
-    """``pexels_get_photo`` return envelope."""
-
     photo: PhotoProjection
 
 
 class SingleVideoResult(TypedDict):
-    """``pexels_get_video`` return envelope."""
-
     video: VideoProjection
 
 
@@ -163,91 +150,62 @@ def video_to_json(video: dict[str, Any]) -> VideoProjection:
     }
 
 
-def _envelope(
-    payload: dict[str, Any],
-    *,
-    items_key: str,
-    items: list[dict[str, Any]],
-    media_projector: Any,
-) -> dict[str, Any]:
-    """Common envelope wrapping a paginated payload.
+def _pagination_block(payload: dict[str, Any], count: int) -> dict[str, Any]:
+    """Pagination fields shared by every list / search / collection envelope.
 
-    Carries the diagnostic block (`filter_diagnostics`) only when the tool
-    layer attached one — i.e. when a post-hoc filter wiped every candidate
-    and the agent needs a hint to retry without aspect_ratio.
+    Optional ``total_results`` and ``next_page`` are emitted only when the
+    upstream payload carries them; ``filter_diagnostics`` only when the
+    tool layer attached one (post-hoc filter wiped the page).
     """
     page = int(payload.get("page", 1))
-    per_page = int(payload.get("per_page", len(items)))
-    total = payload.get("total_results")
-    next_page_url = payload.get("next_page")
-    has_more = bool(next_page_url)
     out: dict[str, Any] = {
         "page": page,
-        "per_page": per_page,
-        "count": len(items),
-        "has_more": has_more,
-        items_key: [media_projector(item) for item in items],
+        "per_page": int(payload.get("per_page", count)),
+        "count": count,
+        "has_more": bool(payload.get("next_page")),
     }
-    if total is not None:
+    if (total := payload.get("total_results")) is not None:
         out["total_results"] = total
-    if has_more:
+    if out["has_more"]:
         out["next_page"] = page + 1
-    diagnostics = payload.get("filter_diagnostics")
-    if diagnostics:
+    if diagnostics := payload.get("filter_diagnostics"):
         out["filter_diagnostics"] = diagnostics
     return out
 
 
 def format_photo_list(payload: dict[str, Any]) -> PhotoListResult:
+    items = payload.get("photos") or []
     return cast(
         PhotoListResult,
-        _envelope(
-            payload,
-            items_key="photos",
-            items=payload.get("photos") or [],
-            media_projector=photo_to_json,
-        ),
+        {
+            **_pagination_block(payload, len(items)),
+            "photos": [photo_to_json(p) for p in items],
+        },
     )
 
 
 def format_video_list(payload: dict[str, Any]) -> VideoListResult:
+    items = payload.get("videos") or []
     return cast(
         VideoListResult,
-        _envelope(
-            payload,
-            items_key="videos",
-            items=payload.get("videos") or [],
-            media_projector=video_to_json,
-        ),
+        {
+            **_pagination_block(payload, len(items)),
+            "videos": [video_to_json(v) for v in items],
+        },
     )
 
 
 def format_collection_media(payload: dict[str, Any]) -> CollectionMediaResult:
     media = payload.get("media") or []
-    photos = [m for m in media if m.get("type") == "Photo"]
-    videos = [m for m in media if m.get("type") == "Video"]
-    page = int(payload.get("page", 1))
-    per_page = int(payload.get("per_page", len(media)))
-    total = payload.get("total_results")
-    next_page_url = payload.get("next_page")
-    has_more = bool(next_page_url)
-    out: dict[str, Any] = {
-        "id": payload.get("id"),
-        "page": page,
-        "per_page": per_page,
-        "count": len(media),
-        "has_more": has_more,
-        "photos": [photo_to_json(p) for p in photos],
-        "videos": [video_to_json(v) for v in videos],
-    }
-    if total is not None:
-        out["total_results"] = total
-    if has_more:
-        out["next_page"] = page + 1
-    diagnostics = payload.get("filter_diagnostics")
-    if diagnostics:
-        out["filter_diagnostics"] = diagnostics
-    return cast(CollectionMediaResult, out)
+    return cast(
+        CollectionMediaResult,
+        {
+            "id": payload.get("id"),
+            **_pagination_block(payload, len(media)),
+            "photos": [photo_to_json(m) for m in media if m.get("type") == "Photo"],
+            "videos": [video_to_json(m) for m in media if m.get("type") == "Video"],
+        },
+    )
 
 
 def format_single_photo(payload: dict[str, Any]) -> SinglePhotoResult:

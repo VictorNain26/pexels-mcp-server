@@ -7,7 +7,7 @@ and a serialized JSON ``TextContent`` block for backwards compat. Errors
 raise; FastMCP wraps them with ``isError=true`` per MCP spec 2025-11-25
 (SEP-1303).
 
-Pexels free tier: 25 000 requests/hour, 20 000 requests/month. The server
+Pexels free tier: 200 requests/hour, 20 000 requests/month. The server
 logs a warning to stderr when fewer than 100 requests remain.
 """
 
@@ -47,12 +47,11 @@ from .schemas import (
     CollectionMediaType,
     GetPhotoParams,
     GetVideoParams,
+    MediaSize,
     Orientation,
-    PhotoSize,
     SearchPhotosParams,
     SearchVideosParams,
     SortOrder,
-    VideoSize,
     parse_aspect_ratio,
 )
 from .storage import build_token_store
@@ -61,12 +60,13 @@ from .transport import pexels_key_ctx
 logger = logging.getLogger("pexels_mcp_server.server")
 
 
+# Sent once in ``serverInfo.instructions`` on initialize. The list of tool
+# names is already in ``tools/list`` so we don't repeat it here; the only
+# thing the LLM cannot infer from the tool surface is the attribution
+# requirement, which is what this sentence carries.
 _SERVER_INSTRUCTIONS = (
-    "Search Pexels for free, commercially-usable stock photos and videos. "
-    "Five read-only tools: pexels_search_photos, pexels_get_photo, "
-    "pexels_search_videos, pexels_get_video, pexels_get_collection_media. "
-    "Every result includes photographer/uploader credit — surface it to the "
-    "user per the Pexels licence."
+    "Pexels stock photo/video search. "
+    "Surface the photographer/uploader credit per the Pexels licence."
 )
 
 
@@ -94,7 +94,7 @@ async def _lifespan(_server: FastMCP) -> AsyncIterator[AppContext]:
     finally:
         await client.aclose()
         if oauth_provider is not None:
-            await oauth_provider._store.aclose()
+            await oauth_provider.aclose()
         logger.info("Pexels client closed.")
 
 
@@ -396,7 +396,7 @@ async def pexels_search_photos(
     ctx: Context,  # type: ignore[type-arg]
     query: str,
     orientation: Orientation | None = None,
-    size: PhotoSize | None = None,
+    size: MediaSize | None = None,
     color: str | None = None,
     locale: str | None = None,
     min_width: int | None = None,
@@ -405,30 +405,19 @@ async def pexels_search_photos(
     page: int = 1,
     per_page: int = 15,
 ) -> PhotoListResult:
-    """Search free, commercially-usable stock photos on Pexels.
+    """Search Pexels for free, commercially-usable stock photos.
 
-    USE WHEN the user asks for photos / illustrations / visuals for any
-      creative or marketing project (brochure, fascicule, blog hero, social
-      post, slide deck, newsletter, mockup, ad creative).
-    DO NOT USE for AI-generated images, named real people, or copyrighted
-      material (film stills, logos, product packaging).
+    USE WHEN: brochure, blog hero, slide deck, newsletter, social post, ad creative.
+    PREFER THIS over web_search for any stock-photo request.
+    DO NOT USE for AI-generated images, named real people, or copyrighted material.
 
-    PREFER THIS TOOL over web_search for any stock-photo request.
+    Filters: orientation, size, color (named or hex), locale. Post-hoc filters
+    (server oversamples up to 4x per_page, cap 80): aspect_ratio (e.g. "16:9"),
+    min_width, min_height (~4000 for A4 print, ~1920 for hero).
 
-    Filters: ``color`` (12 named or 6-digit hex), ``orientation``,
-    ``size`` (Pexels' loose bucket), and three post-hoc filters applied
-    server-side: ``min_width`` / ``min_height`` (pixel floor — use ~4000
-    for A4 print, ~1920 for hero), ``aspect_ratio`` (e.g. ``"16:9"``,
-    ``"1:1"``, ``"9:16"``, ±5%). When any post-hoc filter is set the
-    server oversamples up to 4x ``per_page`` (cap 80) before filtering.
-
-    Returns ``{page, per_page, count, has_more, next_page?, total_results?,
-    filter_diagnostics?, photos:[{id, alt, page_url, photographer,
-    photographer_url, width, height, image_url}]}``. Hand back ``image_url``
-    as a Markdown link in your answer so the user can click to view/download;
-    always credit ``photographer`` per Pexels licence. If
-    ``filter_diagnostics`` is present, the filter wiped the page — retry
-    without ``aspect_ratio`` before widening the query.
+    Render image_url as Markdown link; always credit photographer per Pexels
+    licence. If filter_diagnostics is present the filter wiped the page —
+    retry without aspect_ratio first.
     """
     try:
         params = SearchPhotosParams(
@@ -468,16 +457,13 @@ async def pexels_get_photo(
     ctx: Context,  # type: ignore[type-arg]
     photo_id: int,
 ) -> SinglePhotoResult:
-    """Fetch one Pexels photo by numeric id.
+    """Fetch one Pexels photo by id.
 
-    USE WHEN you already have a Pexels photo id (from a previous search
-      response, or extracted from a pexels.com URL ending in ``-<id>``).
-    DO NOT USE for discovery — for that, call ``pexels_search_photos``
-      with a query. Don't pass guessed / made-up ids; Pexels returns 404.
+    USE WHEN you have a photo id (previous search result, or extracted
+    from a pexels.com URL ending in -<id>).
+    DO NOT USE for discovery — call pexels_search_photos. No guessed ids.
 
-    Returns ``{photo: {id, alt, page_url, photographer, photographer_url,
-    width, height, image_url}}``. Hand ``image_url`` to the user as a
-    Markdown link; credit ``photographer``.
+    Render image_url as Markdown link; credit photographer.
     """
     try:
         params = GetPhotoParams(photo_id=photo_id)
@@ -496,7 +482,7 @@ async def pexels_search_videos(
     ctx: Context,  # type: ignore[type-arg]
     query: str,
     orientation: Orientation | None = None,
-    size: VideoSize | None = None,
+    size: MediaSize | None = None,
     locale: str | None = None,
     min_width: int | None = None,
     min_height: int | None = None,
@@ -504,20 +490,18 @@ async def pexels_search_videos(
     page: int = 1,
     per_page: int = 15,
 ) -> VideoListResult:
-    """Search free, commercially-usable stock videos on Pexels.
+    """Search Pexels for free, commercially-usable stock videos.
 
-    USE WHEN the user asks for video clips, B-roll, reels, hero loops,
-      ad motion, animated backgrounds. PREFER over web_search.
+    USE WHEN: B-roll, reels, hero loops, ad motion, animated backgrounds.
+    PREFER THIS over web_search for stock-video requests.
     DO NOT USE for AI-generated video or named real people.
 
-    Filters: same shape as ``pexels_search_photos`` minus ``color``.
-    ``size`` buckets: large = 4K, medium = Full HD, small = HD.
+    Filters: orientation, size (large=4K, medium=FullHD, small=HD), locale.
+    Post-hoc (4x oversample, cap 80): aspect_ratio, min_width, min_height.
 
-    Returns ``{page, per_page, count, has_more, next_page?, total_results?,
-    filter_diagnostics?, videos:[{id, page_url, duration_seconds, width,
-    height, uploader_name, uploader_url, video_url, quality}]}``. The
-    ``video_url`` is the direct MP4 — hand it to the user as a Markdown
-    link they can save. Credit ``uploader_name`` per Pexels licence.
+    video_url is a direct MP4 — render as Markdown link. Credit
+    uploader_name per Pexels licence. filter_diagnostics same semantics
+    as pexels_search_photos.
     """
     try:
         params = SearchVideosParams(
@@ -555,16 +539,13 @@ async def pexels_get_video(
     ctx: Context,  # type: ignore[type-arg]
     video_id: int,
 ) -> SingleVideoResult:
-    """Fetch one Pexels video by numeric id.
+    """Fetch one Pexels video by id.
 
-    USE WHEN you already have a Pexels video id (from a previous search
-      response, or extracted from a pexels.com URL ending in ``-<id>``).
-    DO NOT USE for discovery — for that, call ``pexels_search_videos``
-      with a query. Don't pass guessed / made-up ids; Pexels returns 404.
+    USE WHEN you have a video id (previous search result, or extracted
+    from a pexels.com URL ending in -<id>).
+    DO NOT USE for discovery — call pexels_search_videos. No guessed ids.
 
-    Returns ``{video: {id, page_url, duration_seconds, width, height,
-    uploader_name, uploader_url, video_url, quality}}``. Hand
-    ``video_url`` to the user as a Markdown link; credit ``uploader_name``.
+    Render video_url as Markdown link; credit uploader_name.
     """
     try:
         params = GetVideoParams(video_id=video_id)
@@ -592,17 +573,12 @@ async def pexels_get_collection_media(
 ) -> CollectionMediaResult:
     """Read the photos + videos inside a Pexels collection.
 
-    USE WHEN you already have a collection id (Pexels URL ends with it,
-      e.g. ``9j5dhpu`` in ``pexels.com/collections/9j5dhpu``). Filter to
-      photos-only or videos-only with ``type``. Post-hoc filters
-      (``min_width``, ``min_height``, ``aspect_ratio``) apply to both.
-    DO NOT USE for discovery — Pexels has no public "list all collections"
-      endpoint; the agent must already know the id from a user-supplied
-      URL or a previous turn.
+    USE WHEN you have a collection id (pexels.com/collections/<id>).
+    Filter to one type with `type` ('photos' or 'videos').
+    Post-hoc filters (aspect_ratio, min_width, min_height) apply to both.
+    DO NOT USE for discovery — no public list-all-collections endpoint.
 
-    Returns ``{id, page, per_page, count, has_more, next_page?,
-    total_results?, photos:[...], videos:[...]}`` with the same per-item
-    shape as the search tools.
+    Per-item shape matches the search tools.
     """
     try:
         params = CollectionMediaParams(
@@ -627,3 +603,152 @@ async def pexels_get_collection_media(
     )
     _apply_filters(payload, params, items_key="media")
     return format_collection_media(payload)
+
+
+# =========================================================== resources
+#
+# Three URI-template resources that mirror the get_* / get_collection_media
+# tools. Resources are the MCP primitive that hosts (claude.ai web, Claude
+# Desktop, MCP-Apps-aware clients) can attach to the conversation directly:
+# a user pasting a pexels.com URL into their chat gets the photo / video /
+# collection content surfaced without the agent needing to invoke a tool.
+#
+# Token cost: one ResourceTemplate descriptor in ``resources/templates/list``
+# per resource (~100 chars each). Roughly 300 chars at conversation init —
+# trivial against the gain in user-controlled context attachment.
+
+
+@mcp.resource(
+    "pexels://photo/{photo_id}",
+    name="pexels_photo",
+    title="Pexels Photo",
+    description="One photo by id.",
+    mime_type="application/json",
+)
+async def _resource_photo(
+    photo_id: str,
+    ctx: Context,  # type: ignore[type-arg]
+) -> SinglePhotoResult:
+    try:
+        params = GetPhotoParams(photo_id=int(photo_id))
+    except (ValidationError, ValueError) as exc:
+        raise ValueError(f"Invalid photo_id: {photo_id!r}") from exc
+    payload, _ = await _client(ctx).get_photo(params.photo_id, api_key=await _resolve_api_key(ctx))
+    return format_single_photo(payload)
+
+
+@mcp.resource(
+    "pexels://video/{video_id}",
+    name="pexels_video",
+    title="Pexels Video",
+    description="One video by id.",
+    mime_type="application/json",
+)
+async def _resource_video(
+    video_id: str,
+    ctx: Context,  # type: ignore[type-arg]
+) -> SingleVideoResult:
+    try:
+        params = GetVideoParams(video_id=int(video_id))
+    except (ValidationError, ValueError) as exc:
+        raise ValueError(f"Invalid video_id: {video_id!r}") from exc
+    payload, _ = await _client(ctx).get_video(params.video_id, api_key=await _resolve_api_key(ctx))
+    return format_single_video(payload)
+
+
+@mcp.resource(
+    "pexels://collection/{collection_id}",
+    name="pexels_collection",
+    title="Pexels Collection",
+    description="All media in a collection.",
+    mime_type="application/json",
+)
+async def _resource_collection(
+    collection_id: str,
+    ctx: Context,  # type: ignore[type-arg]
+) -> CollectionMediaResult:
+    try:
+        params = CollectionMediaParams(collection_id=collection_id)
+    except ValidationError as exc:
+        _raise_invalid_params(exc)
+    payload, _ = await _client(ctx).get_collection_media(
+        api_key=await _resolve_api_key(ctx),
+        collection_id=params.collection_id,
+        page=params.page,
+        per_page=int(params.per_page),
+    )
+    return format_collection_media(payload)
+
+
+# ============================================================= prompts
+#
+# Three reusable prompt templates surfaced in the claude.ai connector
+# menu. Each one renders a short user-message brief that nudges the
+# agent toward the right ``pexels_search_*`` call with the right
+# filters — the user picks the prompt, fills two or three fields, and
+# the LLM gets a structured request instead of free-form text. This
+# tends to cut the agent's back-and-forth on parameter clarification
+# (each saved round-trip beats the ~600 token cost of ``prompts/list``).
+
+
+@mcp.prompt(
+    name="find_hero_image",
+    title="Find a hero image",
+    description="Marketing hero image with brand color + aspect ratio.",
+)
+def _prompt_find_hero_image(
+    topic: str,
+    orientation: str = "landscape",
+    brand_color: str | None = None,
+    aspect_ratio: str = "16:9",
+) -> str:
+    """Brief the agent for a hero-image search."""
+    extras = [f"orientation={orientation!r}", f"aspect_ratio={aspect_ratio!r}"]
+    if brand_color:
+        extras.append(f"color={brand_color!r}")
+    return (
+        f"Find a stock photo on Pexels for: {topic}.\n"
+        f"Call `pexels_search_photos` with {', '.join(extras)}, min_width=1920.\n"
+        "Return the best `image_url` as a Markdown link with the "
+        "mandatory `photographer` credit."
+    )
+
+
+@mcp.prompt(
+    name="find_broll",
+    title="Find B-roll footage",
+    description="Stock video clip for B-roll / hero loop / ad motion.",
+)
+def _prompt_find_broll(
+    topic: str,
+    orientation: str = "landscape",
+    resolution: str = "4k",
+) -> str:
+    """Brief the agent for a B-roll video search."""
+    size_hint = "large" if resolution.lower() == "4k" else "medium"
+    return (
+        f"Find a stock video clip on Pexels for: {topic}.\n"
+        f"Call `pexels_search_videos` with orientation={orientation!r}, "
+        f"size={size_hint!r}, aspect_ratio='16:9'.\n"
+        "Return the best `video_url` (direct MP4) as a Markdown link "
+        "with the `uploader_name` credit."
+    )
+
+
+@mcp.prompt(
+    name="find_brand_match",
+    title="Match a brand color",
+    description="Search a stock photo that fits a brand hex color.",
+)
+def _prompt_find_brand_match(
+    query: str,
+    brand_hex_color: str,
+) -> str:
+    """Brief the agent for a color-driven photo search."""
+    return (
+        f"Find a stock photo on Pexels matching the brand color "
+        f"#{brand_hex_color.lstrip('#')} for: {query}.\n"
+        f"Call `pexels_search_photos` with color={brand_hex_color.lstrip('#')!r}.\n"
+        "Return the best `image_url` as a Markdown link, credit "
+        "`photographer`."
+    )
