@@ -7,7 +7,7 @@ and a serialized JSON ``TextContent`` block for backwards compat. Errors
 raise; FastMCP wraps them with ``isError=true`` per MCP spec 2025-11-25
 (SEP-1303).
 
-Pexels free tier: 25 000 requests/hour, 20 000 requests/month. The server
+Pexels free tier: 200 requests/hour, 20 000 requests/month. The server
 logs a warning to stderr when fewer than 100 requests remain.
 """
 

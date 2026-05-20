@@ -19,6 +19,10 @@ re-explanation into this file or into a code comment.
 
 ## Code conventions in this repo
 
+> These are guidelines, not laws. If a rule below blocks a clearly better
+> approach, override it and document the reason in the PR description.
+> Don't keep a bad practice just to honour the letter of this file.
+
 - **Match scope.** A bug fix touches the bug. A refactor goes in a separate PR.
 - **YAGNI.** Three similar lines beat a premature abstraction. No feature flags
   or backwards-compat shims when the code can simply change.
@@ -33,13 +37,20 @@ re-explanation into this file or into a code comment.
   as-is. FastMCP catches each and marks the `CallToolResult` with
   `isError=true` per MCP spec 2025-11-25 SEP-1303 — never catch and
   return a string, that would silently mark the result as success.
-- **Tool docstrings are written for the LLM caller**, not the human dev. Every
-  tool MUST have: a one-line purpose, **USE WHEN**, **DO NOT USE WHEN**, and a
-  return-shape teaser. Follow
+- **Tool docstrings are written for the LLM caller**, not the human dev.
+  Every tool MUST have: a one-line purpose, **USE WHEN**, **DO NOT USE
+  WHEN**, filter recap, return-shape teaser. Follow
   [Anthropic's "Writing tools for agents"](https://www.anthropic.com/engineering/writing-tools-for-agents).
+  Keep them tight — every char ships in `tools/list` on every
+  conversation init.
 - **Tool annotations are not optional.** Every `@mcp.tool` carries
   `ToolAnnotations` with `title` + `readOnlyHint`. The Anthropic Connector
   Directory rejects ~30 % of submissions for missing these.
+- **Three MCP primitives, all read-only.** This server ships the full
+  set: 5 tools (model-controlled), 3 resources (URI templates per RFC
+  6570), 3 prompts (claude.ai connector menu). See `README.md` for the
+  surface. Future primitives go through the same trim discipline — any
+  type-level docstring leaks into `$defs` of every referencing schema.
 - **No hand-rolled OAuth, no hand-rolled bearer.** The MCP SDK owns the auth
   surface. The only custom piece is `auth.py`'s `OAuthAuthorizationServerProvider`
   implementation and the public landing page at `GET /` registered via
@@ -77,10 +88,18 @@ reading the rationale first.
 - **`max_per_minute=60` rate limit per IP, not per token.** A token-bound
   cap would require sticky sessions or a Redis counter. Per-IP is
   sufficient for the eco-nano tier and avoids both.
-- **SDK monkey-patch in `_sdk_patches.py`.** `FuncMetadata.convert_result`
-  is overridden to pass `exclude_unset=True` to `model_dump`. This is the
-  only place in the repo allowed to mutate third-party state — see the
-  module docstring for the upstream tracking link.
+- **SDK monkey-patches in `_sdk_patches.py`** — the only place in the
+  repo allowed to mutate third-party state. Two patches today:
+  1. `FuncMetadata.convert_result` is forced to pass `exclude_unset=True`
+     to `model_dump`. Without it, optional TypedDict fields leak as
+     `"field": null` and the strict `outputSchema` rejects every call
+     with `"None is not of type 'object'"`.
+  2. Tools with a declared `outputSchema` ship their canonical payload
+     in `structuredContent` and a **45-char marker** in `content[]`
+     instead of the SDK's default indented-JSON duplicate. Saves
+     ~1500 tokens per tool call on a 15-photo search (the original
+     cause of the "conversation too long" overflow). Killswitch:
+     `_DROP_DUPLICATE_TEXT_CONTENT = False` to restore SDK defaults.
 
 ## Day-to-day commands
 

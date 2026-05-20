@@ -4,66 +4,49 @@ All notable changes to this project are documented here. Format follows [Keep a 
 
 ## [Unreleased]
 
-Consolidated notes for everything landed on `main` since v0.6.0. The
-in-progress section was rewritten on 2026-05-19 to drop entries that
-described features added and then removed during the same release cycle.
+Cumulative notes for everything landed on `main` since v0.6.0.
 
 ### Added
 
-- **Redis-backed OAuth state** (PR #25). Opt in via `REDIS_URL` +
-  `MCP_ENCRYPTION_KEY`. DCR clients, access tokens and bound Pexels
-  keys live in Redis (Upstash / Redis Cloud / self-hosted) and survive
-  a server restart. The bound Pexels key is encrypted at rest with
-  Fernet (AES-128-CBC + HMAC-SHA256). Default in-memory behaviour is
-  unchanged. Local dev parity via `docker-compose.yml`.
-- **BYOK `/setup` flow**. `/authorize` redirects the user's browser to
-  a short HTML form (`templates/setup.html`); the user pastes their
-  Pexels key once, the server validates it against `api.pexels.com`,
-  and binds it to the issued access token for 30 days. The
-  `X-Pexels-Api-Key` header remains accepted as a fallback for
-  power-user clients (Cursor stdio bridges, scripts).
-- **Marketing post-hoc filters** (`aspect_ratio`, `min_width`,
-  `min_height`) on every search tool. The server oversamples Pexels
-  by up to 4× when a filter is set. A `filter_diagnostics` block is
-  emitted only when the filter wipes the page, so the agent can retry
-  with a relaxed query.
-- **Public landing page** at `GET /` (HTML in `templates/landing.html`,
-  served via `@mcp.custom_route`), `/readyz` readiness probe alongside
-  `/healthz`, structured JSON logging in HTTP mode (`LOG_FORMAT=json`).
-- **Hardening**: sliding-window rate limit (60 req/min/IP default,
-  tunable via `MCP_RATE_LIMIT_PER_MINUTE`); DNS rebinding allowlist
-  via `MCP_ALLOWED_HOSTS`; trusted-proxy hops via
-  `MCP_TRUSTED_PROXY_HOPS`; HTTPS guard on `MCP_SERVER_URL`; HTTP/2
-  on the outbound Pexels client.
-- **CI**: `pip-audit --strict` against the lockfile and
-  `pytest --cov-fail-under=75` on every PR; docker-build smoke test
-  for the boot path.
-- Live integration tests (`tests/test_live_integration.py`, marker
-  `live`, opt in with `pytest -m live`) hit the real Pexels API.
+- **3-of-3 MCP primitives**. The server now exposes the full MCP surface:
+  - 5 tools (model-controlled): `pexels_search_photos`, `pexels_get_photo`,
+    `pexels_search_videos`, `pexels_get_video`, `pexels_get_collection_media`.
+  - 3 resources (URI templates per RFC 6570): `pexels://photo/{id}`,
+    `pexels://video/{id}`, `pexels://collection/{id}`.
+  - 3 prompts (claude.ai connector menu): `find_hero_image`, `find_broll`,
+    `find_brand_match`.
+- **Redis-backed OAuth state** (opt in via `REDIS_URL` +
+  `MCP_ENCRYPTION_KEY`). DCR clients, access tokens and bound Pexels
+  keys survive server restart. The bound Pexels key is encrypted at rest
+  with Fernet (AES-128-CBC + HMAC-SHA256). Local dev parity via
+  `docker-compose.yml`.
+- **BYOK `/setup` flow**: the user pastes their Pexels key once on a
+  short HTML form during the OAuth handshake; the server validates it
+  against `api.pexels.com` and binds it to the issued access token for
+  30 days. `X-Pexels-Api-Key` header remains a fallback.
+- **Post-hoc search filters** on every search tool: `aspect_ratio`
+  (e.g. `"16:9"`, ±5 %), `min_width`, `min_height`. Server oversamples
+  Pexels by up to 4× when a filter is set. `filter_diagnostics` block
+  emitted only when the filter wipes the page.
+- **Hardening**: sliding-window rate limit (60 req/min/IP, tunable);
+  DNS rebinding allowlist; trusted-proxy hops; HTTPS guard on
+  `MCP_SERVER_URL`; HTTP/2 to Pexels; OAuth `redirect_uri` allowlist
+  (https + loopback http only — RFC 7591 §2 phishing mitigation);
+  Pexels error body sanitization (control chars stripped, token-shaped
+  strings redacted, 200-char cap).
+- **Public landing page** at `GET /` (HTML in `templates/landing.html`);
+  `/readyz` readiness probe; structured JSON logging in HTTP mode.
 
 ### Changed — **BREAKING**
 
-- **MCP spec 2025-11-25 alignment** (PR #24). Tools return a
-  `TypedDict` instead of a JSON-encoded string — the SDK auto-generates
-  `outputSchema` and populates `structuredContent` + a JSON
-  `TextContent` block. Tool errors **raise** so FastMCP marks the
-  `CallToolResult` with `isError=true` (SEP-1303).
+- **MCP spec 2025-11-25 alignment**. Tools return a `TypedDict` —
+  the SDK auto-generates `outputSchema` and populates
+  `structuredContent`. Tool errors **raise** so FastMCP marks the
+  `CallToolResult` with `isError=true` per SEP-1303.
   `serverInfo.instructions` populated.
-- **Tool surface trimmed to 5 read-only tools**:
-  `pexels_search_photos`, `pexels_get_photo`, `pexels_search_videos`,
-  `pexels_get_video`, `pexels_get_collection_media`. Dropped the four
-  niche discovery endpoints (`pexels_curated_photos`,
-  `pexels_popular_videos`, `pexels_list_featured_collections`,
-  `pexels_get_my_collections`) and the SSRF-prone
-  `pexels_preview_media`.
-- **JSON projection lean**: dropped `thumbnail_url`, the `rate_limit`
-  envelope block, and the six per-orientation `src` URLs (kept only
-  `image_url`). Videos keep just `video_url` (top-quality MP4) +
-  `quality`.
-- **OAuth 2.1 + RFC 9728** served end-to-end by the MCP SDK
-  (`AuthSettings` + `OAuthAuthorizationServerProvider` +
-  `ProviderTokenVerifier`). The hand-rolled static-Bearer middleware
-  is gone. Access-token TTL bumped from 1 h to 30 days.
+- **OAuth 2.1 + RFC 9728** served end-to-end by the MCP SDK. The
+  hand-rolled static-Bearer middleware is gone. Access-token TTL
+  bumped from 1 h to 30 days.
 - **Env vars**:
   - Removed: `MCP_AUTH_TOKEN`, `MCP_ALLOW_UNAUTHED`,
     `MCP_AUTH_PASSCODE`, `PEXELS_API_KEY` (HTTP-mode fallback).
@@ -71,9 +54,38 @@ described features added and then removed during the same release cycle.
   - New optional: `REDIS_URL`, `MCP_ENCRYPTION_KEY`,
     `MCP_ALLOWED_HOSTS`, `MCP_RATE_LIMIT_PER_MINUTE`,
     `MCP_TRUSTED_PROXY_HOPS`, `LOG_FORMAT`.
+- **Tool surface trimmed to 5 read-only tools** (was 9). Dropped
+  `pexels_curated_photos`, `pexels_popular_videos`,
+  `pexels_list_featured_collections`, `pexels_get_my_collections`, and
+  the SSRF-prone `pexels_preview_media`.
+- **Lean JSON projection**: dropped `thumbnail_url`, `rate_limit`
+  envelope block, the 6 per-orientation `src` URLs (kept `image_url`).
+  Videos keep `video_url` (top-quality MP4) + `quality` only.
 - Dropped tool parameters: `response_format` (JSON-only now),
   `include_previews`, `aspect_ratio_tolerance` (hardcoded 5 %),
   `min_duration`, `max_duration`.
+
+### Performance
+
+- **Tool result no longer duplicated on the wire**. The SDK's default
+  shipped the same payload twice: once as `structuredContent` and
+  once as indented JSON in `content[]`. A 15-photo search burned
+  ~3 100 tokens per call this way. Our `_sdk_patches.py` now emits a
+  45-char marker in `content[]` while `structuredContent` carries the
+  canonical payload — **−1 500 tokens per tool call** on typical
+  searches. Killswitch: `_DROP_DUPLICATE_TEXT_CONTENT = False`.
+- **SDK `model_dump` patched** to pass `exclude_unset=True`. Without it,
+  optional TypedDict fields leak as `"field": null` in
+  `structuredContent` and the strict jsonschema rejects the call with
+  `"None is not of type 'object'"` — the original "Output validation
+  error" from claude.ai.
+- **Tool descriptions trimmed** from ~3 875c → 2 229c total. Type-level
+  docstrings (`MediaSize`, `PhotoProjection`, `VideoProjection`,
+  `FilterDiagnostics`, all the `*Result` envelopes) removed because
+  pydantic surfaces them as `description` in every referencing
+  `$defs` — net `tools/list` payload now 15 210c vs 18 016c on main.
+- `serverInfo.instructions` reduced to one sentence (attribution
+  requirement only — the tool list is already in `tools/list`).
 
 ### Removed
 
@@ -81,6 +93,9 @@ described features added and then removed during the same release cycle.
   `ui://pexels/results` resource and `templates/results_grid.html` —
   user-visible inline display is now driven by the LLM rendering
   `![alt](image_url)` Markdown, which claude.ai renders natively.
+- `InMemoryTokenStore.expired_token_keys` — dead code, no callers.
+- `SUBMIT.md`, `CONTRIBUTING.md` — superseded by `README.md` and
+  `CLAUDE.md`.
 
 ## [0.6.0] - 2026-05-19
 
