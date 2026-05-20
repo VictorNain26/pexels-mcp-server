@@ -114,7 +114,7 @@
 <body>
     <header>
         <h1>Pexels MCP server <span class="badge">PUBLIC</span></h1>
-        <p class="tagline">Free Pexels photo and video search as a Model Context Protocol server. 5 tools + 3 resources + 3 prompts, OAuth 2.1, bring-your-own Pexels API key.</p>
+        <p class="tagline">Free Pexels photo and video search as a Model Context Protocol server. 8 tools + 3 resources + 2 prompts, OAuth 2.1, bring-your-own Pexels API key.</p>
     </header>
 
     <main>
@@ -133,9 +133,9 @@
         <h2>What this server exposes</h2>
         <p>The three MCP primitives, all read-only and aligned with the <a href="https://modelcontextprotocol.io/specification/2025-11-25" target="_blank" rel="noopener">MCP spec 2025-11-25</a>.</p>
         <ul>
-            <li><strong>5 tools</strong> (model-controlled): <code>pexels_search_photos</code>, <code>pexels_get_photo</code>, <code>pexels_search_videos</code>, <code>pexels_get_video</code>, <code>pexels_get_collection_media</code>.</li>
+            <li><strong>8 tools</strong> (model-controlled): <code>pexels_search_photos</code>, <code>pexels_get_photo</code>, <code>pexels_search_videos</code>, <code>pexels_get_video</code>, <code>pexels_get_collection_media</code>, <code>pexels_get_curated_photos</code>, <code>pexels_get_popular_videos</code>, <code>pexels_get_featured_collections</code>.</li>
             <li><strong>3 resources</strong> (URI templates): <code>pexels://photo/{id}</code>, <code>pexels://video/{id}</code>, <code>pexels://collection/{id}</code>.</li>
-            <li><strong>3 prompts</strong>: <code>find_hero_image</code>, <code>find_broll</code>, <code>find_brand_match</code> — surfaced in the claude.ai connector menu.</li>
+            <li><strong>2 prompts</strong>: <code>find_hero_image</code>, <code>find_broll</code> — surfaced in the claude.ai connector menu.</li>
         </ul>
         <p>Every result includes <code>photographer</code> / <code>uploader_name</code> credit so the agent renders the user-facing answer with the mandatory attribution.</p>
 

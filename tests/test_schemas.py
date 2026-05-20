@@ -220,3 +220,91 @@ def test_aspect_ratio_tolerance_no_longer_exposed_as_param() -> None:
     A future user-facing knob can come back if real demand shows up."""
     with pytest.raises(ValidationError):
         SearchPhotosParams(query="cat", aspect_ratio_tolerance=0.1)  # type: ignore[call-arg]
+
+
+# --- discovery params: CuratedPhotosParams / PopularVideosParams /
+#     FeaturedCollectionsParams --------------------------------------------
+
+
+def test_curated_photos_defaults() -> None:
+    from pexels_mcp_server.schemas import CuratedPhotosParams
+
+    params = CuratedPhotosParams()
+    assert params.page == 1
+    assert params.per_page == 15
+    assert params.aspect_ratio is None
+
+
+def test_curated_photos_accepts_post_hoc_filters() -> None:
+    from pexels_mcp_server.schemas import CuratedPhotosParams
+
+    params = CuratedPhotosParams(aspect_ratio="16:9", min_width=1920, min_height=1080)
+    assert params.aspect_ratio == "16:9"
+    assert params.min_width == 1920
+
+
+def test_featured_collections_takes_pagination_only() -> None:
+    """No filters on this endpoint — Pexels exposes none, and the response
+    carries collection metadata, not media."""
+    from pexels_mcp_server.schemas import FeaturedCollectionsParams
+
+    params = FeaturedCollectionsParams()
+    assert params.page == 1
+    assert params.per_page == 15
+
+    with pytest.raises(ValidationError):
+        FeaturedCollectionsParams(aspect_ratio="16:9")  # type: ignore[call-arg]
+
+
+def test_popular_videos_accepts_native_and_post_hoc_filters() -> None:
+    from pexels_mcp_server.schemas import PopularVideosParams
+
+    params = PopularVideosParams(
+        min_width=1920,
+        min_height=1080,
+        min_duration=5,
+        max_duration=30,
+        aspect_ratio="16:9",
+    )
+    assert params.min_width == 1920
+    assert params.min_duration == 5
+    assert params.max_duration == 30
+
+
+def test_popular_videos_rejects_inverted_duration_range() -> None:
+    """min_duration > max_duration is a typo — reject it at the boundary
+    rather than hitting Pexels and getting an empty page back."""
+    from pexels_mcp_server.schemas import PopularVideosParams
+
+    with pytest.raises(ValidationError, match="min_duration"):
+        PopularVideosParams(min_duration=60, max_duration=10)
+
+
+def test_popular_videos_allows_equal_duration_bounds() -> None:
+    """Equal min/max is a legitimate "exactly N seconds" request, not an
+    error."""
+    from pexels_mcp_server.schemas import PopularVideosParams
+
+    params = PopularVideosParams(min_duration=15, max_duration=15)
+    assert params.min_duration == 15
+
+
+def test_popular_videos_rejects_negative_duration() -> None:
+    from pexels_mcp_server.schemas import PopularVideosParams
+
+    with pytest.raises(ValidationError):
+        PopularVideosParams(min_duration=0)
+
+
+def test_popular_videos_rejects_unknown_field() -> None:
+    from pexels_mcp_server.schemas import PopularVideosParams
+
+    with pytest.raises(ValidationError):
+        PopularVideosParams(query="cat")  # type: ignore[call-arg]
+
+
+def test_popular_videos_rejects_invalid_aspect_ratio() -> None:
+    from pexels_mcp_server.schemas import PopularVideosParams
+
+    with pytest.raises(ValidationError):
+        PopularVideosParams(aspect_ratio="not-a-ratio")

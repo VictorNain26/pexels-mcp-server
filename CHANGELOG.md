@@ -9,12 +9,23 @@ Cumulative notes for everything landed on `main` since v0.6.0.
 ### Added
 
 - **3-of-3 MCP primitives**. The server now exposes the full MCP surface:
-  - 5 tools (model-controlled): `pexels_search_photos`, `pexels_get_photo`,
-    `pexels_search_videos`, `pexels_get_video`, `pexels_get_collection_media`.
+  - 8 tools (model-controlled): the five core search / by-id / collection
+    tools (`pexels_search_photos`, `pexels_get_photo`,
+    `pexels_search_videos`, `pexels_get_video`,
+    `pexels_get_collection_media`) plus three discovery feeds
+    (`pexels_get_curated_photos`, `pexels_get_popular_videos`,
+    `pexels_get_featured_collections`). Featured-collections is the
+    only public discovery path for collection ids — pipe a returned id
+    into `pexels_get_collection_media`. Popular-videos forwards
+    `min_width` / `min_height` / `min_duration` / `max_duration`
+    natively (Pexels filters server-side, no oversampling).
   - 3 resources (URI templates per RFC 6570): `pexels://photo/{id}`,
     `pexels://video/{id}`, `pexels://collection/{id}`.
-  - 3 prompts (claude.ai connector menu): `find_hero_image`, `find_broll`,
-    `find_brand_match`.
+  - 2 prompts (claude.ai connector menu): `find_hero_image`,
+    `find_broll`. (A third prompt `find_brand_match` was prototyped and
+    then dropped — `find_hero_image` already exposes an optional
+    `brand_color`, so the variant doubled the menu noise without
+    adding behaviour.)
 - **Redis-backed OAuth state** (opt in via `REDIS_URL` +
   `MCP_ENCRYPTION_KEY`). DCR clients, access tokens and bound Pexels
   keys survive server restart. The bound Pexels key is encrypted at rest
@@ -54,16 +65,24 @@ Cumulative notes for everything landed on `main` since v0.6.0.
   - New optional: `REDIS_URL`, `MCP_ENCRYPTION_KEY`,
     `MCP_ALLOWED_HOSTS`, `MCP_RATE_LIMIT_PER_MINUTE`,
     `MCP_TRUSTED_PROXY_HOPS`, `LOG_FORMAT`.
-- **Tool surface trimmed to 5 read-only tools** (was 9). Dropped
-  `pexels_curated_photos`, `pexels_popular_videos`,
-  `pexels_list_featured_collections`, `pexels_get_my_collections`, and
-  the SSRF-prone `pexels_preview_media`.
+- **Tool surface refined to 8 read-only tools** (was 9). Dropped
+  `pexels_get_my_collections` (Pexels has no public OAuth scope for
+  retrieving an arbitrary user's collections — the endpoint requires
+  the user's own personal key, which the BYOK setup already covers
+  generically) and the SSRF-prone `pexels_preview_media`. The discovery
+  trio (`pexels_get_curated_photos`, `pexels_get_popular_videos`,
+  `pexels_get_featured_collections`) was briefly trimmed during the
+  refactor and re-added: they cover real discovery use cases (trending
+  feeds, collection directory) and stay in the same token budget as
+  the search tools.
 - **Lean JSON projection**: dropped `thumbnail_url`, `rate_limit`
   envelope block, the 6 per-orientation `src` URLs (kept `image_url`).
   Videos keep `video_url` (top-quality MP4) + `quality` only.
-- Dropped tool parameters: `response_format` (JSON-only now),
-  `include_previews`, `aspect_ratio_tolerance` (hardcoded 5 %),
-  `min_duration`, `max_duration`.
+- Dropped tool parameters on the search tools: `response_format`
+  (JSON-only now), `include_previews`, `aspect_ratio_tolerance`
+  (hardcoded 5 %). `min_duration` / `max_duration` are now exclusive
+  to `pexels_get_popular_videos` where Pexels honours them
+  server-side; the photo / video *search* endpoints do not.
 
 ### Performance
 

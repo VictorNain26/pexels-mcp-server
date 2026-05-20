@@ -165,12 +165,12 @@ async def test_healthz_and_oauth_metadata_do_not_require_auth(
 # --- Tool registry sanity check ------------------------------------------
 
 
-def test_tool_registry_holds_exactly_five_tools() -> None:
-    """Five focused tools: search photos / get photo / search videos /
-    get video / get collection media. Inspiration-mode endpoints
-    (curated, popular_videos, list_featured_collections,
-    get_my_collections) were dropped 2026-05-19 — they cost ~1 KB in the
-    tool list presented to the LLM and were rarely used in practice."""
+def test_tool_registry_holds_exactly_eight_tools() -> None:
+    """Eight read-only tools covering the public Pexels API surface:
+    five core (search / by-id / collection) + three discovery feeds
+    (curated photos, popular videos, featured collections).
+    `pexels_get_my_collections` and `pexels_preview_media` were dropped
+    in #29 (no public OAuth scope / SSRF surface respectively)."""
     from pexels_mcp_server import server as module
 
     tools = module.mcp._tool_manager.list_tools()
@@ -181,6 +181,9 @@ def test_tool_registry_holds_exactly_five_tools() -> None:
         "pexels_search_videos",
         "pexels_get_video",
         "pexels_get_collection_media",
+        "pexels_get_curated_photos",
+        "pexels_get_popular_videos",
+        "pexels_get_featured_collections",
     }
 
 
@@ -203,13 +206,15 @@ def test_resource_templates_match_pexels_uri_scheme() -> None:
 
 
 def test_prompts_registry_exposes_marketing_workflows() -> None:
-    """Three reusable prompts surfaced in the claude.ai connector menu:
-    find_hero_image, find_broll, find_brand_match. Each one cuts an
-    agent round-trip on parameter clarification."""
+    """Two reusable prompts surfaced in the claude.ai connector menu:
+    find_hero_image, find_broll. Each one cuts an agent round-trip on
+    parameter clarification. ``find_brand_match`` was dropped because
+    ``find_hero_image`` already accepts an optional ``brand_color`` —
+    carrying a near-duplicate variant doubled the menu noise."""
     from pexels_mcp_server import server as module
 
     names = {p.name for p in module.mcp._prompt_manager.list_prompts()}
-    assert names == {"find_hero_image", "find_broll", "find_brand_match"}
+    assert names == {"find_hero_image", "find_broll"}
 
 
 async def test_prompt_find_hero_image_renders_actionable_brief() -> None:

@@ -321,6 +321,56 @@ class PexelsClient:
             api_key=self._require_key(api_key),
         )
 
+    async def get_curated_photos(
+        self,
+        *,
+        api_key: str | None,
+        page: int = 1,
+        per_page: int = 15,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        return await self._request(
+            f"{PHOTOS_PREFIX}/curated",
+            {"page": page, "per_page": per_page},
+            api_key=self._require_key(api_key),
+        )
+
+    async def get_popular_videos(
+        self,
+        *,
+        api_key: str | None,
+        min_width: int | None = None,
+        min_height: int | None = None,
+        min_duration: int | None = None,
+        max_duration: int | None = None,
+        page: int = 1,
+        per_page: int = 15,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        return await self._request(
+            f"{VIDEOS_PREFIX}/popular",
+            {
+                "min_width": min_width,
+                "min_height": min_height,
+                "min_duration": min_duration,
+                "max_duration": max_duration,
+                "page": page,
+                "per_page": per_page,
+            },
+            api_key=self._require_key(api_key),
+        )
+
+    async def get_featured_collections(
+        self,
+        *,
+        api_key: str | None,
+        page: int = 1,
+        per_page: int = 15,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        return await self._request(
+            f"{COLLECTIONS_PREFIX}/featured",
+            {"page": page, "per_page": per_page},
+            api_key=self._require_key(api_key),
+        )
+
     async def validate_key(self, api_key: str) -> bool:
         """Probe ``GET /v1/collections`` with ``api_key`` to confirm it works.
 

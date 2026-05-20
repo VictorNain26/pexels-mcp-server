@@ -1,11 +1,13 @@
 """FastMCP server exposing the Pexels API to MCP-aware AI agents.
 
-Five read-only tools: search photos / get photo / search videos / get video
-/ get collection media. Each tool returns a structured ``dict`` — the SDK
-auto-populates ``structuredContent`` (validated against ``outputSchema``)
-and a serialized JSON ``TextContent`` block for backwards compat. Errors
-raise; FastMCP wraps them with ``isError=true`` per MCP spec 2025-11-25
-(SEP-1303).
+Eight read-only tools covering the practical surface of the public Pexels
+API: targeted search (photos / videos), by-id lookup (photos / videos),
+collection contents, and three discovery feeds (curated photos / popular
+videos / featured collections). Each tool returns a structured ``dict`` —
+the SDK auto-populates ``structuredContent`` (validated against
+``outputSchema``) and a serialized JSON ``TextContent`` block for
+backwards compat. Errors raise; FastMCP wraps them with ``isError=true``
+per MCP spec 2025-11-25 (SEP-1303).
 
 Pexels free tier: 200 requests/hour, 20 000 requests/month. The server
 logs a warning to stderr when fewer than 100 requests remain.
@@ -31,12 +33,14 @@ from .client import PexelsAPIError, PexelsClient
 from .constants import MAX_PER_PAGE
 from .formatters import (
     CollectionMediaResult,
+    FeaturedCollectionsResult,
     PhotoListResult,
     SinglePhotoResult,
     SingleVideoResult,
     VideoListResult,
     filter_by_dimensions,
     format_collection_media,
+    format_featured_collections,
     format_photo_list,
     format_single_photo,
     format_single_video,
@@ -45,10 +49,13 @@ from .formatters import (
 from .schemas import (
     CollectionMediaParams,
     CollectionMediaType,
+    CuratedPhotosParams,
+    FeaturedCollectionsParams,
     GetPhotoParams,
     GetVideoParams,
     MediaSize,
     Orientation,
+    PopularVideosParams,
     SearchPhotosParams,
     SearchVideosParams,
     SortOrder,
@@ -617,6 +624,160 @@ async def pexels_get_collection_media(
     return format_collection_media(payload)
 
 
+@mcp.tool(
+    name="pexels_get_curated_photos",
+    title="Get Pexels Curated Photos",
+    annotations=_READ_ONLY,
+)
+async def pexels_get_curated_photos(
+    ctx: Context,  # type: ignore[type-arg]
+    min_width: int | None = None,
+    min_height: int | None = None,
+    aspect_ratio: str | None = None,
+    page: int = 1,
+    per_page: int = 15,
+) -> PhotoListResult:
+    """Fetch Pexels' editor-curated daily photo feed.
+
+    USE WHEN: feed-style discovery without a specific query — "what's
+    trending on Pexels today", brand-safe brainstorming, mood-board fuel.
+    DO NOT USE for targeted topic search — call pexels_search_photos.
+
+    Post-hoc filters (4x oversample, cap 80): aspect_ratio, min_width,
+    min_height. image_url is a public CDN link: render as Markdown or
+    pass to any URL-accepting downstream tool. Do not curl/download
+    the bytes. Always credit photographer per Pexels licence.
+    """
+    try:
+        params = CuratedPhotosParams(
+            min_width=min_width,
+            min_height=min_height,
+            aspect_ratio=aspect_ratio,
+            page=page,
+            per_page=per_page,
+        )
+    except ValidationError as exc:
+        _raise_invalid_params(exc)
+    payload, _ = await _client(ctx).get_curated_photos(
+        api_key=await _resolve_api_key(ctx),
+        page=params.page,
+        per_page=_fetch_per_page(params),
+    )
+    _apply_filters(payload, params, items_key="photos")
+    return format_photo_list(payload)
+
+
+@mcp.tool(
+    name="pexels_get_popular_videos",
+    title="Get Pexels Popular Videos",
+    annotations=_READ_ONLY,
+)
+async def pexels_get_popular_videos(
+    ctx: Context,  # type: ignore[type-arg]
+    min_width: int | None = None,
+    min_height: int | None = None,
+    min_duration: int | None = None,
+    max_duration: int | None = None,
+    aspect_ratio: str | None = None,
+    page: int = 1,
+    per_page: int = 15,
+) -> VideoListResult:
+    """Fetch Pexels' trending video feed.
+
+    USE WHEN: B-roll inspiration, trending motion content, ad reference.
+    DO NOT USE for query-specific video search — call pexels_search_videos.
+
+    Native Pexels filters (server-side, no oversampling): min_width,
+    min_height, min_duration (seconds), max_duration (seconds). Post-hoc
+    (oversampled 4x, cap 80 when set): aspect_ratio. video_url is a
+    public CDN MP4 link: render as Markdown or pass to any URL-accepting
+    downstream tool. Do not curl/download the bytes. Credit
+    uploader_name per Pexels licence.
+    """
+    try:
+        params = PopularVideosParams(
+            min_width=min_width,
+            min_height=min_height,
+            min_duration=min_duration,
+            max_duration=max_duration,
+            aspect_ratio=aspect_ratio,
+            page=page,
+            per_page=per_page,
+        )
+    except ValidationError as exc:
+        _raise_invalid_params(exc)
+    # Only oversample when aspect_ratio is set — min_*/duration are
+    # already filtered server-side by Pexels.
+    fetch_per_page = (
+        min(int(params.per_page) * 4, MAX_PER_PAGE)
+        if params.aspect_ratio is not None
+        else int(params.per_page)
+    )
+    payload, _ = await _client(ctx).get_popular_videos(
+        api_key=await _resolve_api_key(ctx),
+        min_width=params.min_width,
+        min_height=params.min_height,
+        min_duration=params.min_duration,
+        max_duration=params.max_duration,
+        page=params.page,
+        per_page=fetch_per_page,
+    )
+    # Apply only the aspect_ratio post-hoc filter — Pexels already
+    # honoured min_width/min_height server-side.
+    if params.aspect_ratio is not None:
+        target_ratio = parse_aspect_ratio(params.aspect_ratio)
+        items = payload.get("videos") or []
+        pre_count = len(items)
+        filtered = filter_by_dimensions(items, aspect_ratio=target_ratio)
+        payload["videos"] = filtered[: int(params.per_page)]
+        payload["per_page"] = int(params.per_page)
+        if pre_count > 0 and not filtered:
+            payload["filter_diagnostics"] = {
+                "applied_filters": {"aspect_ratio": params.aspect_ratio},
+                "pre_filter_count": pre_count,
+                "post_filter_count": 0,
+                "suggestion": (
+                    "Filters rejected every candidate. Retry without aspect_ratio "
+                    "(crop to target ratio in post)."
+                ),
+            }
+    return format_video_list(payload)
+
+
+@mcp.tool(
+    name="pexels_get_featured_collections",
+    title="Get Pexels Featured Collections",
+    annotations=_READ_ONLY,
+)
+async def pexels_get_featured_collections(
+    ctx: Context,  # type: ignore[type-arg]
+    page: int = 1,
+    per_page: int = 15,
+) -> FeaturedCollectionsResult:
+    """Discover Pexels' editor-curated collections.
+
+    USE WHEN you need a collection id and don't have one — Pexels has no
+    public list-all-collections endpoint, so /featured is the only
+    discovery path. Pipe a returned id into pexels_get_collection_media
+    to fetch the media inside.
+
+    Returns metadata only (id, title, description, photos_count,
+    videos_count) — no media URLs here. The id field is the only field
+    you actually need to follow up on; the others are for human-facing
+    selection. No filters, just pagination.
+    """
+    try:
+        params = FeaturedCollectionsParams(page=page, per_page=per_page)
+    except ValidationError as exc:
+        _raise_invalid_params(exc)
+    payload, _ = await _client(ctx).get_featured_collections(
+        api_key=await _resolve_api_key(ctx),
+        page=params.page,
+        per_page=int(params.per_page),
+    )
+    return format_featured_collections(payload)
+
+
 # =========================================================== resources
 #
 # Three URI-template resources that mirror the get_* / get_collection_media
@@ -694,13 +855,18 @@ async def _resource_collection(
 
 # ============================================================= prompts
 #
-# Three reusable prompt templates surfaced in the claude.ai connector
+# Two reusable prompt templates surfaced in the claude.ai connector
 # menu. Each one renders a short user-message brief that nudges the
 # agent toward the right ``pexels_search_*`` call with the right
 # filters — the user picks the prompt, fills two or three fields, and
 # the LLM gets a structured request instead of free-form text. This
 # tends to cut the agent's back-and-forth on parameter clarification
 # (each saved round-trip beats the ~600 token cost of ``prompts/list``).
+#
+# A previous third prompt (``find_brand_match``) was dropped because
+# ``find_hero_image`` already accepts an optional ``brand_color`` —
+# carrying a near-duplicate variant doubled the menu noise for zero
+# new behaviour.
 
 
 @mcp.prompt(
@@ -735,32 +901,16 @@ def _prompt_find_broll(
     topic: str,
     orientation: str = "landscape",
     resolution: str = "4k",
+    aspect_ratio: str = "16:9",
 ) -> str:
     """Brief the agent for a B-roll video search."""
     size_hint = "large" if resolution.lower() == "4k" else "medium"
+    min_width_hint = 3840 if size_hint == "large" else 1920
     return (
         f"Find a stock video clip on Pexels for: {topic}.\n"
         f"Call `pexels_search_videos` with orientation={orientation!r}, "
-        f"size={size_hint!r}, aspect_ratio='16:9'.\n"
+        f"size={size_hint!r}, aspect_ratio={aspect_ratio!r}, "
+        f"min_width={min_width_hint}.\n"
         "Return the best `video_url` (direct MP4) as a Markdown link "
         "with the `uploader_name` credit."
-    )
-
-
-@mcp.prompt(
-    name="find_brand_match",
-    title="Match a brand color",
-    description="Search a stock photo that fits a brand hex color.",
-)
-def _prompt_find_brand_match(
-    query: str,
-    brand_hex_color: str,
-) -> str:
-    """Brief the agent for a color-driven photo search."""
-    return (
-        f"Find a stock photo on Pexels matching the brand color "
-        f"#{brand_hex_color.lstrip('#')} for: {query}.\n"
-        f"Call `pexels_search_photos` with color={brand_hex_color.lstrip('#')!r}.\n"
-        "Return the best `image_url` as a Markdown link, credit "
-        "`photographer`."
     )
