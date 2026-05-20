@@ -144,21 +144,6 @@ class InMemoryTokenStore:
     async def delete_pexels_key(self, token: str) -> None:
         self._token_to_key.pop(token, None)
 
-    # ---------------------------------------------------------- sweep helpers
-
-    def expired_token_keys(self, now: float) -> list[str]:
-        """Return tokens whose ``expires_at`` is in the past.
-
-        Provider-side sweep helper — only meaningful for the in-memory
-        backend (Redis evicts on TTL). Returning the keys lets the
-        provider drop them in one shot.
-        """
-        return [
-            tok
-            for tok, at in self._tokens.items()
-            if at.expires_at is not None and at.expires_at < now
-        ]
-
     async def aclose(self) -> None:
         return None
 

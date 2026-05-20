@@ -163,91 +163,62 @@ def video_to_json(video: dict[str, Any]) -> VideoProjection:
     }
 
 
-def _envelope(
-    payload: dict[str, Any],
-    *,
-    items_key: str,
-    items: list[dict[str, Any]],
-    media_projector: Any,
-) -> dict[str, Any]:
-    """Common envelope wrapping a paginated payload.
+def _pagination_block(payload: dict[str, Any], count: int) -> dict[str, Any]:
+    """Pagination fields shared by every list / search / collection envelope.
 
-    Carries the diagnostic block (`filter_diagnostics`) only when the tool
-    layer attached one — i.e. when a post-hoc filter wiped every candidate
-    and the agent needs a hint to retry without aspect_ratio.
+    Optional ``total_results`` and ``next_page`` are emitted only when the
+    upstream payload carries them; ``filter_diagnostics`` only when the
+    tool layer attached one (post-hoc filter wiped the page).
     """
     page = int(payload.get("page", 1))
-    per_page = int(payload.get("per_page", len(items)))
-    total = payload.get("total_results")
-    next_page_url = payload.get("next_page")
-    has_more = bool(next_page_url)
     out: dict[str, Any] = {
         "page": page,
-        "per_page": per_page,
-        "count": len(items),
-        "has_more": has_more,
-        items_key: [media_projector(item) for item in items],
+        "per_page": int(payload.get("per_page", count)),
+        "count": count,
+        "has_more": bool(payload.get("next_page")),
     }
-    if total is not None:
+    if (total := payload.get("total_results")) is not None:
         out["total_results"] = total
-    if has_more:
+    if out["has_more"]:
         out["next_page"] = page + 1
-    diagnostics = payload.get("filter_diagnostics")
-    if diagnostics:
+    if diagnostics := payload.get("filter_diagnostics"):
         out["filter_diagnostics"] = diagnostics
     return out
 
 
 def format_photo_list(payload: dict[str, Any]) -> PhotoListResult:
+    items = payload.get("photos") or []
     return cast(
         PhotoListResult,
-        _envelope(
-            payload,
-            items_key="photos",
-            items=payload.get("photos") or [],
-            media_projector=photo_to_json,
-        ),
+        {
+            **_pagination_block(payload, len(items)),
+            "photos": [photo_to_json(p) for p in items],
+        },
     )
 
 
 def format_video_list(payload: dict[str, Any]) -> VideoListResult:
+    items = payload.get("videos") or []
     return cast(
         VideoListResult,
-        _envelope(
-            payload,
-            items_key="videos",
-            items=payload.get("videos") or [],
-            media_projector=video_to_json,
-        ),
+        {
+            **_pagination_block(payload, len(items)),
+            "videos": [video_to_json(v) for v in items],
+        },
     )
 
 
 def format_collection_media(payload: dict[str, Any]) -> CollectionMediaResult:
     media = payload.get("media") or []
-    photos = [m for m in media if m.get("type") == "Photo"]
-    videos = [m for m in media if m.get("type") == "Video"]
-    page = int(payload.get("page", 1))
-    per_page = int(payload.get("per_page", len(media)))
-    total = payload.get("total_results")
-    next_page_url = payload.get("next_page")
-    has_more = bool(next_page_url)
-    out: dict[str, Any] = {
-        "id": payload.get("id"),
-        "page": page,
-        "per_page": per_page,
-        "count": len(media),
-        "has_more": has_more,
-        "photos": [photo_to_json(p) for p in photos],
-        "videos": [video_to_json(v) for v in videos],
-    }
-    if total is not None:
-        out["total_results"] = total
-    if has_more:
-        out["next_page"] = page + 1
-    diagnostics = payload.get("filter_diagnostics")
-    if diagnostics:
-        out["filter_diagnostics"] = diagnostics
-    return cast(CollectionMediaResult, out)
+    return cast(
+        CollectionMediaResult,
+        {
+            "id": payload.get("id"),
+            **_pagination_block(payload, len(media)),
+            "photos": [photo_to_json(m) for m in media if m.get("type") == "Photo"],
+            "videos": [video_to_json(m) for m in media if m.get("type") == "Video"],
+        },
+    )
 
 
 def format_single_photo(payload: dict[str, Any]) -> SinglePhotoResult:
