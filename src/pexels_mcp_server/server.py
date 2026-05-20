@@ -60,12 +60,13 @@ from .transport import pexels_key_ctx
 logger = logging.getLogger("pexels_mcp_server.server")
 
 
+# Sent once in ``serverInfo.instructions`` on initialize. The list of tool
+# names is already in ``tools/list`` so we don't repeat it here; the only
+# thing the LLM cannot infer from the tool surface is the attribution
+# requirement, which is what this sentence carries.
 _SERVER_INSTRUCTIONS = (
-    "Search Pexels for free, commercially-usable stock photos and videos. "
-    "Five read-only tools: pexels_search_photos, pexels_get_photo, "
-    "pexels_search_videos, pexels_get_video, pexels_get_collection_media. "
-    "Every result includes photographer/uploader credit — surface it to the "
-    "user per the Pexels licence."
+    "Pexels stock photo/video search. "
+    "Surface the photographer/uploader credit per the Pexels licence."
 )
 
 
@@ -621,7 +622,7 @@ async def pexels_get_collection_media(
     "pexels://photo/{photo_id}",
     name="pexels_photo",
     title="Pexels Photo",
-    description="One photo by id. URI template: pexels://photo/<photo_id>.",
+    description="One photo by id.",
     mime_type="application/json",
 )
 async def _resource_photo(
@@ -640,7 +641,7 @@ async def _resource_photo(
     "pexels://video/{video_id}",
     name="pexels_video",
     title="Pexels Video",
-    description="One video by id. URI template: pexels://video/<video_id>.",
+    description="One video by id.",
     mime_type="application/json",
 )
 async def _resource_video(
@@ -659,7 +660,7 @@ async def _resource_video(
     "pexels://collection/{collection_id}",
     name="pexels_collection",
     title="Pexels Collection",
-    description="All media in a collection. URI: pexels://collection/<id>.",
+    description="All media in a collection.",
     mime_type="application/json",
 )
 async def _resource_collection(

@@ -17,10 +17,15 @@ from __future__ import annotations
 
 from typing import Any, TypedDict, cast
 
+# Docstrings deliberately omitted from the TypedDicts below: each one
+# would surface as ``description: ...`` in every tool's outputSchema
+# $defs (PhotoProjection is referenced by 3 tools, VideoProjection by 3
+# tools, FilterDiagnostics by 4 — so a one-liner docstring becomes 4-8
+# duplicated chars in list_tools). The shape is self-documenting via
+# field names; the dev-facing intent lives in the module docstring.
+
 
 class PhotoProjection(TypedDict):
-    """Minimal LLM-actionable shape for a Pexels photo."""
-
     id: int | None
     alt: str | None
     page_url: str | None
@@ -32,8 +37,6 @@ class PhotoProjection(TypedDict):
 
 
 class VideoProjection(TypedDict):
-    """Minimal LLM-actionable shape for a Pexels video (top file only)."""
-
     id: int | None
     page_url: str | None
     duration_seconds: int | None
@@ -46,8 +49,6 @@ class VideoProjection(TypedDict):
 
 
 class FilterDiagnostics(TypedDict):
-    """Diagnostic block surfaced when a post-hoc filter wiped every candidate."""
-
     applied_filters: dict[str, Any]
     pre_filter_count: int
     post_filter_count: int
@@ -55,8 +56,7 @@ class FilterDiagnostics(TypedDict):
 
 
 class _SearchListBase(TypedDict):
-    """Required pagination fields shared by every search/list envelope."""
-
+    # Required pagination fields shared by every search/list envelope.
     page: int
     per_page: int
     count: int
@@ -76,11 +76,6 @@ class _PhotoListRequired(_SearchListBase):
 
 
 class PhotoListResult(_PhotoListRequired, total=False):
-    """``pexels_search_photos`` return envelope. Optional fields are only
-    emitted when the upstream payload carries them (``total_results``,
-    ``next_page``) or the post-hoc filter wiped the page
-    (``filter_diagnostics``)."""
-
     total_results: int
     next_page: int
     filter_diagnostics: FilterDiagnostics
@@ -91,8 +86,6 @@ class _VideoListRequired(_SearchListBase):
 
 
 class VideoListResult(_VideoListRequired, total=False):
-    """``pexels_search_videos`` return envelope."""
-
     total_results: int
     next_page: int
     filter_diagnostics: FilterDiagnostics
@@ -105,24 +98,18 @@ class _CollectionMediaRequired(_SearchListBase):
 
 
 class CollectionMediaResult(_CollectionMediaRequired, total=False):
-    """``pexels_get_collection_media`` return envelope. ``photos`` and
-    ``videos`` are always present (possibly empty) so the agent can
-    iterate both lists unconditionally."""
-
+    # ``photos`` + ``videos`` are always present (possibly empty) so the
+    # agent can iterate both lists unconditionally regardless of ``type``.
     total_results: int
     next_page: int
     filter_diagnostics: FilterDiagnostics
 
 
 class SinglePhotoResult(TypedDict):
-    """``pexels_get_photo`` return envelope."""
-
     photo: PhotoProjection
 
 
 class SingleVideoResult(TypedDict):
-    """``pexels_get_video`` return envelope."""
-
     video: VideoProjection
 
 
