@@ -80,7 +80,18 @@ jobs:
         run: uv export --format requirements-txt --no-emit-project --no-editable --no-header -o audit-requirements.txt
 
       - name: Run pip-audit on the locked dependency set
-        run: uv run pip-audit --strict -r audit-requirements.txt --disable-pip
+        # PYSEC-2025-183 ("pyjwt weak encryption") is publicly disputed
+        # by the upstream maintainers: the advisory hinges on the calling
+        # application picking a too-short HMAC key, which is the
+        # application's responsibility, not the library's. The advisory
+        # has no fix version. This server does not emit JWTs at all —
+        # access tokens are opaque ``mcp_<hex>`` strings minted by our
+        # OAuth provider — so the disputed vector is not reachable here.
+        # Remove this ignore when the advisory is rejected upstream or
+        # a fixed release lands.
+        run: |
+          uv run pip-audit --strict -r audit-requirements.txt --disable-pip \
+            --ignore-vuln PYSEC-2025-183
 
   docker-build:
     # Validate the Dockerfile builds end-to-end. Catches Dockerfile regressions
