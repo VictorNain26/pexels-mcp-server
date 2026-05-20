@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pexels_mcp_server.formatters import (
+    PhotoListResult,
     filter_by_dimensions,
     format_collection_media,
     format_photo_list,
@@ -187,6 +188,56 @@ def test_envelope_omits_filter_diagnostics_when_payload_has_none() -> None:
     }
     out = format_photo_list(payload)
     assert "filter_diagnostics" not in out
+
+
+# --- SDK convert_result patch regression ----------------------------------
+# The MCP Python SDK 1.27 dumps tool results via ``model_dump(mode="json")``
+# without ``exclude_unset=True``, leaking ``null`` for every optional
+# TypedDict field. We patch ``FuncMetadata.convert_result`` to add the
+# missing flag (see ``_sdk_patches.py``). This test guards both that the
+# patch is applied and that it produces the right structured payload.
+
+
+def _shape_probe() -> PhotoListResult:  # pragma: no cover - shape probe only
+    return format_photo_list({})
+
+
+def test_sdk_convert_result_patch_omits_unset_optional_typeddict_fields() -> None:
+    """End-to-end check: the patched ``convert_result`` must not leak
+    ``filter_diagnostics``/``total_results``/``next_page`` as ``null``
+    when the formatter never set them. Without the patch, calls fail
+    with ``Output validation error: None is not of type 'object'``."""
+    import jsonschema
+    from mcp.server.fastmcp.utilities.func_metadata import func_metadata
+
+    meta = func_metadata(_shape_probe)
+    assert meta.output_schema is not None
+
+    payload = {
+        "page": 1,
+        "per_page": 5,
+        "photos": [
+            {
+                "id": 1,
+                "alt": "Eiffel",
+                "url": "https://pexels.com/photo/1",
+                "photographer": "X",
+                "photographer_url": "https://pexels.com/@x",
+                "width": 4000,
+                "height": 6000,
+                "src": {"original": "https://images.pexels.com/photos/1/original.jpg"},
+            }
+        ],
+    }
+    converted = meta.convert_result(format_photo_list(payload))
+    assert isinstance(converted, tuple)
+    _, structured = converted
+
+    assert "filter_diagnostics" not in structured
+    assert "total_results" not in structured
+    assert "next_page" not in structured
+
+    jsonschema.validate(instance=structured, schema=meta.output_schema)
 
 
 # --- filter_by_dimensions: post-hoc filter -------------------------------
