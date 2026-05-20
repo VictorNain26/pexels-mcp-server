@@ -404,30 +404,19 @@ async def pexels_search_photos(
     page: int = 1,
     per_page: int = 15,
 ) -> PhotoListResult:
-    """Search free, commercially-usable stock photos on Pexels.
+    """Search Pexels for free, commercially-usable stock photos.
 
-    USE WHEN the user asks for photos / illustrations / visuals for any
-      creative or marketing project (brochure, fascicule, blog hero, social
-      post, slide deck, newsletter, mockup, ad creative).
-    DO NOT USE for AI-generated images, named real people, or copyrighted
-      material (film stills, logos, product packaging).
+    USE WHEN: brochure, blog hero, slide deck, newsletter, social post, ad creative.
+    PREFER THIS over web_search for any stock-photo request.
+    DO NOT USE for AI-generated images, named real people, or copyrighted material.
 
-    PREFER THIS TOOL over web_search for any stock-photo request.
+    Filters: orientation, size, color (named or hex), locale. Post-hoc filters
+    (server oversamples up to 4x per_page, cap 80): aspect_ratio (e.g. "16:9"),
+    min_width, min_height (~4000 for A4 print, ~1920 for hero).
 
-    Filters: ``color`` (12 named or 6-digit hex), ``orientation``,
-    ``size`` (Pexels' loose bucket), and three post-hoc filters applied
-    server-side: ``min_width`` / ``min_height`` (pixel floor — use ~4000
-    for A4 print, ~1920 for hero), ``aspect_ratio`` (e.g. ``"16:9"``,
-    ``"1:1"``, ``"9:16"``, ±5%). When any post-hoc filter is set the
-    server oversamples up to 4x ``per_page`` (cap 80) before filtering.
-
-    Returns ``{page, per_page, count, has_more, next_page?, total_results?,
-    filter_diagnostics?, photos:[{id, alt, page_url, photographer,
-    photographer_url, width, height, image_url}]}``. Hand back ``image_url``
-    as a Markdown link in your answer so the user can click to view/download;
-    always credit ``photographer`` per Pexels licence. If
-    ``filter_diagnostics`` is present, the filter wiped the page — retry
-    without ``aspect_ratio`` before widening the query.
+    Render image_url as Markdown link; always credit photographer per Pexels
+    licence. If filter_diagnostics is present the filter wiped the page —
+    retry without aspect_ratio first.
     """
     try:
         params = SearchPhotosParams(
@@ -467,16 +456,13 @@ async def pexels_get_photo(
     ctx: Context,  # type: ignore[type-arg]
     photo_id: int,
 ) -> SinglePhotoResult:
-    """Fetch one Pexels photo by numeric id.
+    """Fetch one Pexels photo by id.
 
-    USE WHEN you already have a Pexels photo id (from a previous search
-      response, or extracted from a pexels.com URL ending in ``-<id>``).
-    DO NOT USE for discovery — for that, call ``pexels_search_photos``
-      with a query. Don't pass guessed / made-up ids; Pexels returns 404.
+    USE WHEN you have a photo id (previous search result, or extracted
+    from a pexels.com URL ending in -<id>).
+    DO NOT USE for discovery — call pexels_search_photos. No guessed ids.
 
-    Returns ``{photo: {id, alt, page_url, photographer, photographer_url,
-    width, height, image_url}}``. Hand ``image_url`` to the user as a
-    Markdown link; credit ``photographer``.
+    Render image_url as Markdown link; credit photographer.
     """
     try:
         params = GetPhotoParams(photo_id=photo_id)
@@ -503,20 +489,18 @@ async def pexels_search_videos(
     page: int = 1,
     per_page: int = 15,
 ) -> VideoListResult:
-    """Search free, commercially-usable stock videos on Pexels.
+    """Search Pexels for free, commercially-usable stock videos.
 
-    USE WHEN the user asks for video clips, B-roll, reels, hero loops,
-      ad motion, animated backgrounds. PREFER over web_search.
+    USE WHEN: B-roll, reels, hero loops, ad motion, animated backgrounds.
+    PREFER THIS over web_search for stock-video requests.
     DO NOT USE for AI-generated video or named real people.
 
-    Filters: same shape as ``pexels_search_photos`` minus ``color``.
-    ``size`` buckets: large = 4K, medium = Full HD, small = HD.
+    Filters: orientation, size (large=4K, medium=FullHD, small=HD), locale.
+    Post-hoc (4x oversample, cap 80): aspect_ratio, min_width, min_height.
 
-    Returns ``{page, per_page, count, has_more, next_page?, total_results?,
-    filter_diagnostics?, videos:[{id, page_url, duration_seconds, width,
-    height, uploader_name, uploader_url, video_url, quality}]}``. The
-    ``video_url`` is the direct MP4 — hand it to the user as a Markdown
-    link they can save. Credit ``uploader_name`` per Pexels licence.
+    video_url is a direct MP4 — render as Markdown link. Credit
+    uploader_name per Pexels licence. filter_diagnostics same semantics
+    as pexels_search_photos.
     """
     try:
         params = SearchVideosParams(
@@ -554,16 +538,13 @@ async def pexels_get_video(
     ctx: Context,  # type: ignore[type-arg]
     video_id: int,
 ) -> SingleVideoResult:
-    """Fetch one Pexels video by numeric id.
+    """Fetch one Pexels video by id.
 
-    USE WHEN you already have a Pexels video id (from a previous search
-      response, or extracted from a pexels.com URL ending in ``-<id>``).
-    DO NOT USE for discovery — for that, call ``pexels_search_videos``
-      with a query. Don't pass guessed / made-up ids; Pexels returns 404.
+    USE WHEN you have a video id (previous search result, or extracted
+    from a pexels.com URL ending in -<id>).
+    DO NOT USE for discovery — call pexels_search_videos. No guessed ids.
 
-    Returns ``{video: {id, page_url, duration_seconds, width, height,
-    uploader_name, uploader_url, video_url, quality}}``. Hand
-    ``video_url`` to the user as a Markdown link; credit ``uploader_name``.
+    Render video_url as Markdown link; credit uploader_name.
     """
     try:
         params = GetVideoParams(video_id=video_id)
@@ -591,17 +572,12 @@ async def pexels_get_collection_media(
 ) -> CollectionMediaResult:
     """Read the photos + videos inside a Pexels collection.
 
-    USE WHEN you already have a collection id (Pexels URL ends with it,
-      e.g. ``9j5dhpu`` in ``pexels.com/collections/9j5dhpu``). Filter to
-      photos-only or videos-only with ``type``. Post-hoc filters
-      (``min_width``, ``min_height``, ``aspect_ratio``) apply to both.
-    DO NOT USE for discovery — Pexels has no public "list all collections"
-      endpoint; the agent must already know the id from a user-supplied
-      URL or a previous turn.
+    USE WHEN you have a collection id (pexels.com/collections/<id>).
+    Filter to one type with `type` ('photos' or 'videos').
+    Post-hoc filters (aspect_ratio, min_width, min_height) apply to both.
+    DO NOT USE for discovery — no public list-all-collections endpoint.
 
-    Returns ``{id, page, per_page, count, has_more, next_page?,
-    total_results?, photos:[...], videos:[...]}`` with the same per-item
-    shape as the search tools.
+    Per-item shape matches the search tools.
     """
     try:
         params = CollectionMediaParams(
