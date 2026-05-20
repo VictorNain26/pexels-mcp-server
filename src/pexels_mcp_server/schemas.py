@@ -70,10 +70,9 @@ class Orientation(str, Enum):
 
 
 class MediaSize(str, Enum):
-    """Pexels' ``size`` bucket. Same string values for photos and videos —
-    photos: large=24MP, medium=12MP, small=4MP; videos: large=4K,
-    medium=Full HD, small=HD."""
-
+    # No docstring: pydantic surfaces it on every tool's inputSchema $defs.
+    # Photos: large=24MP, medium=12MP, small=4MP. Videos: large=4K,
+    # medium=Full HD, small=HD. Kept here in code so devs see it.
     LARGE = "large"
     MEDIUM = "medium"
     SMALL = "small"
