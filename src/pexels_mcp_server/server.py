@@ -60,24 +60,23 @@ from .transport import pexels_key_ctx
 logger = logging.getLogger("pexels_mcp_server.server")
 
 
-# Sent once in ``serverInfo.instructions`` on initialize. Three things the
+# Sent once in ``serverInfo.instructions`` on initialize. Two things the
 # LLM cannot infer from the tool surface alone:
 #
 # 1. Attribution: photographer / uploader credit is mandatory per the
 #    Pexels licence.
 # 2. URL handling: ``image_url`` / ``video_url`` are public CDN links —
-#    render them as Markdown for inline display, or pass them through
-#    to another MCP server (e.g. a Drive connector that accepts an
-#    upload-from-URL). **Never** download the bytes via Bash / curl;
-#    that wastes the user's token budget and is what bloats the
-#    conversation into overflow.
+#    render them as Markdown for inline display, or hand them to any
+#    URL-accepting downstream tool. Downloading the bytes locally
+#    (curl + base64) wastes the user's token budget for zero gain —
+#    the bytes never become useful tokens for the LLM, they just
+#    transit through the context and bloat it into overflow.
 _SERVER_INSTRUCTIONS = (
     "Pexels stock photo/video search. "
     "Credit photographer/uploader per the Pexels licence. "
     "image_url and video_url are public CDN links: render them as Markdown "
-    "or pass them to a downstream tool (e.g. a Drive connector that uploads "
-    "from URL). Do not download the bytes locally — it wastes tokens and "
-    "fills the conversation."
+    "for inline display, or pass them to any URL-accepting downstream tool "
+    "(image fills, design assets, embeds). Do not download the bytes locally."
 )
 
 
@@ -426,9 +425,9 @@ async def pexels_search_photos(
     (server oversamples up to 4x per_page, cap 80): aspect_ratio (e.g. "16:9"),
     min_width, min_height (~4000 for A4 print, ~1920 for hero).
 
-    image_url is a public CDN link: render as Markdown or pass to a
-    downstream tool (Drive upload-from-URL). Do not curl/download the
-    bytes. Always credit photographer per Pexels licence.
+    image_url is a public CDN link: render as Markdown or pass to any
+    URL-accepting downstream tool. Do not curl/download the bytes.
+    Always credit photographer per Pexels licence.
     filter_diagnostics present → retry without aspect_ratio first.
     """
     try:
@@ -511,10 +510,10 @@ async def pexels_search_videos(
     Filters: orientation, size (large=4K, medium=FullHD, small=HD), locale.
     Post-hoc (4x oversample, cap 80): aspect_ratio, min_width, min_height.
 
-    video_url is a public CDN MP4 link: render as Markdown or pass to a
-    downstream tool (Drive upload-from-URL). Do not curl/download the
-    bytes. Credit uploader_name per Pexels licence. filter_diagnostics
-    same semantics as pexels_search_photos.
+    video_url is a public CDN MP4 link: render as Markdown or pass to any
+    URL-accepting downstream tool. Do not curl/download the bytes.
+    Credit uploader_name per Pexels licence. filter_diagnostics same
+    semantics as pexels_search_photos.
     """
     try:
         params = SearchVideosParams(
