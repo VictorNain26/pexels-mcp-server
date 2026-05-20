@@ -202,6 +202,49 @@ def _shape_probe() -> PhotoListResult:  # pragma: no cover - shape probe only
     return format_photo_list({})
 
 
+def test_sdk_convert_result_patch_drops_duplicate_indented_text_content() -> None:
+    """The SDK default ships the entire tool payload twice: once as
+    structuredContent (compact) and once as a TextContent serialized
+    with ``indent=2``. For a 15-item search that doubles the wire size
+    and burns ~1500 tokens per call. Our patch replaces the duplicate
+    text with a 45-char marker pointing at structuredContent."""
+    from mcp.server.fastmcp.utilities.func_metadata import func_metadata
+    from mcp.types import TextContent
+
+    def _probe() -> PhotoListResult:  # pragma: no cover - shape probe only
+        return format_photo_list({})
+
+    meta = func_metadata(_probe)
+    payload = {
+        "page": 1,
+        "per_page": 5,
+        "photos": [
+            {
+                "id": 1,
+                "alt": "x",
+                "url": "https://pexels.com/photo/1",
+                "photographer": "X",
+                "photographer_url": "https://pexels.com/@x",
+                "width": 4000,
+                "height": 6000,
+                "src": {"original": "https://images.pexels.com/photos/1/original.jpg"},
+            }
+        ],
+    }
+    converted = meta.convert_result(format_photo_list(payload))
+    assert isinstance(converted, tuple), "Patched convert_result must return (content, structured)"
+    unstructured, structured = converted
+
+    # Content is a one-line marker, NOT the full payload.
+    assert len(unstructured) == 1
+    assert isinstance(unstructured[0], TextContent)
+    assert "structuredContent" in unstructured[0].text
+    assert len(unstructured[0].text) < 100, "Marker must stay tiny — no payload duplication"
+
+    # Full payload is in structuredContent (where the LLM will read it).
+    assert structured["photos"][0]["image_url"].endswith("/original.jpg")
+
+
 def test_sdk_convert_result_patch_omits_unset_optional_typeddict_fields() -> None:
     """End-to-end check: the patched ``convert_result`` must not leak
     ``filter_diagnostics``/``total_results``/``next_page`` as ``null``
