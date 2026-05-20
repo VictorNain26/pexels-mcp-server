@@ -93,6 +93,30 @@ async def test_register_client_rejects_missing_id() -> None:
         await provider.register_client(bad_client)
 
 
+async def test_register_client_rejects_non_https_remote_redirect_uri() -> None:
+    """RFC 7591 §2: AS validates redirect_uris. Refuse http:// to a
+    non-loopback host — that's the OAuth phishing vector."""
+    provider = _make_provider()
+    evil = OAuthClientInformationFull(
+        client_id="phisher",
+        redirect_uris=[AnyUrl("http://attacker.com/callback")],
+    )
+    with pytest.raises(ValueError, match="https"):
+        await provider.register_client(evil)
+
+
+async def test_register_client_accepts_loopback_http_for_dev() -> None:
+    """Claude Desktop / MCP Inspector run locally and register
+    http://127.0.0.1:<port>/callback — this must keep working."""
+    provider = _make_provider()
+    local = OAuthClientInformationFull(
+        client_id="inspector",
+        redirect_uris=[AnyUrl("http://127.0.0.1:6274/oauth/callback")],
+    )
+    await provider.register_client(local)
+    assert (await provider.get_client("inspector")) is not None
+
+
 async def test_authorize_parks_request_and_redirects_to_setup() -> None:
     provider = _make_provider()
     client = _make_client()
