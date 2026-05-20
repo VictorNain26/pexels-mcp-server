@@ -94,12 +94,16 @@ reading the rationale first.
      to `model_dump`. Without it, optional TypedDict fields leak as
      `"field": null` and the strict `outputSchema` rejects every call
      with `"None is not of type 'object'"`.
-  2. Tools with a declared `outputSchema` ship their canonical payload
-     in `structuredContent` and a **45-char marker** in `content[]`
-     instead of the SDK's default indented-JSON duplicate. Saves
-     ~1500 tokens per tool call on a 15-photo search (the original
-     cause of the "conversation too long" overflow). Killswitch:
-     `_DROP_DUPLICATE_TEXT_CONTENT = False` to restore SDK defaults.
+  2. Tool result text content is serialised as **compact JSON**
+     (`separators=(",", ":")`) instead of the SDK's
+     `pydantic_core.to_json(indent=2)`. Saves ~30 % bytes per call
+     while keeping the agent able to read the payload from `content`
+     — claude.ai's custom-connector path (May 2026) still feeds only
+     `content` to the model, so a marker-only `content` made the
+     agent hallucinate CDN patterns. When a future Claude release
+     confirms native `structuredContent` consumption for custom
+     connectors, switch back to a marker and document the
+     verification.
 
 ## Day-to-day commands
 

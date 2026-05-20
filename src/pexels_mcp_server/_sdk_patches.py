@@ -25,38 +25,44 @@ The SDK acknowledges the missing flag itself in a comment at
 
 We supply that flag here.
 
-Issue 2 — every tool result is duplicated as indented JSON
-----------------------------------------------------------
+Issue 2 — text content is serialised with ``indent=2``
+-------------------------------------------------------
 
-The SDK's ``_convert_to_content`` serialises the dict to a ``TextContent``
-via ``pydantic_core.to_json(result, indent=2)``. The same payload is
-then **also** placed in ``structuredContent`` (compact). For a 15-photo
-search result that means **~7 KB of indented JSON shipped on top of
-the ~6 KB structured payload — every single tool call**. Five calls in
-one conversation burn ~8 800 redundant tokens of the user's quota
-before the agent even composes its reply.
+The SDK's ``_convert_to_content`` serialises the tool result dict to a
+``TextContent`` via ``pydantic_core.to_json(result, indent=2)``. That is
+roughly **+30 % bytes** versus a compact JSON dump (for a 15-photo
+search: ~7 100 c indented vs ~5 400 c compact), and the indented blob
+ships *on top of* the same payload re-encoded in ``structuredContent``.
 
-MCP spec 2025-11-25 reads ``structuredContent`` as the canonical machine-
-readable payload (SEP-1303). Clients that need the human-friendly text
-get a one-line marker pointing at it. The full JSON stays available
-through ``structuredContent``; nothing is dropped, only the duplication.
+Why we don't drop the text content entirely
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-If we ever ship to a client that does **not** read ``structuredContent``,
-flip ``_DROP_DUPLICATE_TEXT_CONTENT`` to ``False`` and the original
-``indent=2`` text content comes back.
+MCP spec 2025-11-25 designates ``structuredContent`` as the canonical
+machine-readable payload (SEP-1303). In principle a marker like
+``"See structuredContent for the result payload."`` is enough. **In
+practice (May 2026), claude.ai's custom MCP connector path still feeds
+only ``content`` to the model** — a marker-only response causes the
+agent to fall back on hallucinated CDN patterns instead of reading the
+URLs that sat in ``structuredContent`` the whole time.
+
+So this patch ships the payload in *both* fields, but uses **compact
+JSON** in ``content`` (no indent, no whitespace) instead of the SDK
+default. We get a ~30 % saving on the text-content side without
+betting on client implementation details we don't control.
+
+When a future Claude client confirms it consumes ``structuredContent``
+natively, drop the duplicate text content by setting the compact JSON
+to a short marker again — but treat that change as user-visible and
+test it end-to-end first.
 """
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from mcp.server.fastmcp.utilities import func_metadata as _fm
 from mcp.types import CallToolResult, TextContent
-
-# When True (default): tools that return a structured dict ship an empty
-# content list — the structuredContent is the canonical payload.
-# When False: ship the legacy SDK behaviour (indented JSON in content).
-_DROP_DUPLICATE_TEXT_CONTENT = True
 
 
 def _patched_convert_result(self: _fm.FuncMetadata, result: Any) -> Any:
@@ -86,19 +92,12 @@ def _patched_convert_result(self: _fm.FuncMetadata, result: Any) -> Any:
         exclude_unset=True,
     )
 
-    if _DROP_DUPLICATE_TEXT_CONTENT:
-        # MCP spec 2025-11-25: structuredContent is the canonical machine-
-        # readable payload. We ship a one-line marker in ``content`` so
-        # any client that reads ``content`` knows where to look, without
-        # paying the cost of a duplicate indented dump of the entire
-        # payload. Saves ~50% of every tool call's bandwidth.
-        marker = TextContent(
-            type="text",
-            text="See structuredContent for the result payload.",
-        )
-        return ([marker], structured_content)
-
-    return (_fm._convert_to_content(result), structured_content)
+    # Compact JSON for the human-readable channel. Same payload as
+    # structuredContent, but ~30 % smaller than the SDK's ``indent=2``
+    # default. The agent reads this in claude.ai today; structuredContent
+    # is there for any client that prefers the typed path.
+    compact_text = json.dumps(structured_content, separators=(",", ":"), ensure_ascii=False)
+    return ([TextContent(type="text", text=compact_text)], structured_content)
 
 
 def apply() -> None:

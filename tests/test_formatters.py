@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 from pexels_mcp_server.formatters import (
     PhotoListResult,
     filter_by_dimensions,
@@ -202,12 +204,14 @@ def _shape_probe() -> PhotoListResult:  # pragma: no cover - shape probe only
     return format_photo_list({})
 
 
-def test_sdk_convert_result_patch_drops_duplicate_indented_text_content() -> None:
-    """The SDK default ships the entire tool payload twice: once as
-    structuredContent (compact) and once as a TextContent serialized
-    with ``indent=2``. For a 15-item search that doubles the wire size
-    and burns ~1500 tokens per call. Our patch replaces the duplicate
-    text with a 45-char marker pointing at structuredContent."""
+def test_sdk_convert_result_patch_serialises_text_content_compact() -> None:
+    """The SDK default serialises tool payloads with ``indent=2``, which
+    is ~30 % larger than a compact dump. Our patch uses compact JSON
+    (no whitespace, no newlines) for the text content while leaving the
+    canonical payload in structuredContent. The text content carries
+    the full payload — claude.ai's custom-connector path still feeds
+    only ``content`` to the model, so a marker-only response would
+    leave the agent hallucinating CDN patterns."""
     from mcp.server.fastmcp.utilities.func_metadata import func_metadata
     from mcp.types import TextContent
 
@@ -235,13 +239,20 @@ def test_sdk_convert_result_patch_drops_duplicate_indented_text_content() -> Non
     assert isinstance(converted, tuple), "Patched convert_result must return (content, structured)"
     unstructured, structured = converted
 
-    # Content is a one-line marker, NOT the full payload.
+    # Content carries the FULL payload, but as compact JSON (no
+    # indent, no newlines) — so the agent can read URLs directly.
     assert len(unstructured) == 1
     assert isinstance(unstructured[0], TextContent)
-    assert "structuredContent" in unstructured[0].text
-    assert len(unstructured[0].text) < 100, "Marker must stay tiny — no payload duplication"
+    text = unstructured[0].text
+    assert "/original.jpg" in text, "Content must carry the actual image URL"
+    assert "\n" not in text, "Compact JSON must not contain newlines"
+    # Compact dump is significantly smaller than indented (~30 % saving).
+    indented = json.dumps(structured, indent=2)
+    assert len(text) < len(indented) * 0.85, (
+        f"Compact text ({len(text)}c) should be much shorter than indented ({len(indented)}c)"
+    )
 
-    # Full payload is in structuredContent (where the LLM will read it).
+    # Structured content stays the canonical typed payload.
     assert structured["photos"][0]["image_url"].endswith("/original.jpg")
 
 
