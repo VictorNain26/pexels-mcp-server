@@ -182,3 +182,46 @@ def test_tool_registry_holds_exactly_five_tools() -> None:
         "pexels_get_video",
         "pexels_get_collection_media",
     }
+
+
+# --- MCP Resources + Prompts primitives ---------------------------------
+
+
+def test_resource_templates_match_pexels_uri_scheme() -> None:
+    """Three URI-template resources mirror the get_* tools so a user
+    pasting a pexels.com URL gets the content surfaced without the
+    agent invoking a tool. Token cost: ~100 chars per descriptor."""
+    from pexels_mcp_server import server as module
+
+    templates = module.mcp._resource_manager._templates
+    uris = {t.uri_template for t in templates.values()}
+    assert uris == {
+        "pexels://photo/{photo_id}",
+        "pexels://video/{video_id}",
+        "pexels://collection/{collection_id}",
+    }
+
+
+def test_prompts_registry_exposes_marketing_workflows() -> None:
+    """Three reusable prompts surfaced in the claude.ai connector menu:
+    find_hero_image, find_broll, find_brand_match. Each one cuts an
+    agent round-trip on parameter clarification."""
+    from pexels_mcp_server import server as module
+
+    names = {p.name for p in module.mcp._prompt_manager.list_prompts()}
+    assert names == {"find_hero_image", "find_broll", "find_brand_match"}
+
+
+async def test_prompt_find_hero_image_renders_actionable_brief() -> None:
+    """The rendered prompt must name the tool, the filters, and the
+    attribution requirement — otherwise the agent can't act on it."""
+    from pexels_mcp_server import server as module
+
+    prompt = module.mcp._prompt_manager.get_prompt("find_hero_image")
+    assert prompt is not None
+    messages = await prompt.render({"topic": "Paris", "brand_color": "blue"})
+    rendered = "\n".join(str(m.content) for m in messages)
+    assert "pexels_search_photos" in rendered
+    assert "Paris" in rendered
+    assert "blue" in rendered
+    assert "photographer" in rendered

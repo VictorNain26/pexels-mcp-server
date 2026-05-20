@@ -602,3 +602,152 @@ async def pexels_get_collection_media(
     )
     _apply_filters(payload, params, items_key="media")
     return format_collection_media(payload)
+
+
+# =========================================================== resources
+#
+# Three URI-template resources that mirror the get_* / get_collection_media
+# tools. Resources are the MCP primitive that hosts (claude.ai web, Claude
+# Desktop, MCP-Apps-aware clients) can attach to the conversation directly:
+# a user pasting a pexels.com URL into their chat gets the photo / video /
+# collection content surfaced without the agent needing to invoke a tool.
+#
+# Token cost: one ResourceTemplate descriptor in ``resources/templates/list``
+# per resource (~100 chars each). Roughly 300 chars at conversation init —
+# trivial against the gain in user-controlled context attachment.
+
+
+@mcp.resource(
+    "pexels://photo/{photo_id}",
+    name="pexels_photo",
+    title="Pexels Photo",
+    description="One photo by id. URI template: pexels://photo/<photo_id>.",
+    mime_type="application/json",
+)
+async def _resource_photo(
+    photo_id: str,
+    ctx: Context,  # type: ignore[type-arg]
+) -> SinglePhotoResult:
+    try:
+        params = GetPhotoParams(photo_id=int(photo_id))
+    except (ValidationError, ValueError) as exc:
+        raise ValueError(f"Invalid photo_id: {photo_id!r}") from exc
+    payload, _ = await _client(ctx).get_photo(params.photo_id, api_key=await _resolve_api_key(ctx))
+    return format_single_photo(payload)
+
+
+@mcp.resource(
+    "pexels://video/{video_id}",
+    name="pexels_video",
+    title="Pexels Video",
+    description="One video by id. URI template: pexels://video/<video_id>.",
+    mime_type="application/json",
+)
+async def _resource_video(
+    video_id: str,
+    ctx: Context,  # type: ignore[type-arg]
+) -> SingleVideoResult:
+    try:
+        params = GetVideoParams(video_id=int(video_id))
+    except (ValidationError, ValueError) as exc:
+        raise ValueError(f"Invalid video_id: {video_id!r}") from exc
+    payload, _ = await _client(ctx).get_video(params.video_id, api_key=await _resolve_api_key(ctx))
+    return format_single_video(payload)
+
+
+@mcp.resource(
+    "pexels://collection/{collection_id}",
+    name="pexels_collection",
+    title="Pexels Collection",
+    description="All media in a collection. URI: pexels://collection/<id>.",
+    mime_type="application/json",
+)
+async def _resource_collection(
+    collection_id: str,
+    ctx: Context,  # type: ignore[type-arg]
+) -> CollectionMediaResult:
+    try:
+        params = CollectionMediaParams(collection_id=collection_id)
+    except ValidationError as exc:
+        _raise_invalid_params(exc)
+    payload, _ = await _client(ctx).get_collection_media(
+        api_key=await _resolve_api_key(ctx),
+        collection_id=params.collection_id,
+        page=params.page,
+        per_page=int(params.per_page),
+    )
+    return format_collection_media(payload)
+
+
+# ============================================================= prompts
+#
+# Three reusable prompt templates surfaced in the claude.ai connector
+# menu. Each one renders a short user-message brief that nudges the
+# agent toward the right ``pexels_search_*`` call with the right
+# filters — the user picks the prompt, fills two or three fields, and
+# the LLM gets a structured request instead of free-form text. This
+# tends to cut the agent's back-and-forth on parameter clarification
+# (each saved round-trip beats the ~600 token cost of ``prompts/list``).
+
+
+@mcp.prompt(
+    name="find_hero_image",
+    title="Find a hero image",
+    description="Marketing hero image with brand color + aspect ratio.",
+)
+def _prompt_find_hero_image(
+    topic: str,
+    orientation: str = "landscape",
+    brand_color: str | None = None,
+    aspect_ratio: str = "16:9",
+) -> str:
+    """Brief the agent for a hero-image search."""
+    extras = [f"orientation={orientation!r}", f"aspect_ratio={aspect_ratio!r}"]
+    if brand_color:
+        extras.append(f"color={brand_color!r}")
+    return (
+        f"Find a stock photo on Pexels for: {topic}.\n"
+        f"Call `pexels_search_photos` with {', '.join(extras)}, min_width=1920.\n"
+        "Return the best `image_url` as a Markdown link with the "
+        "mandatory `photographer` credit."
+    )
+
+
+@mcp.prompt(
+    name="find_broll",
+    title="Find B-roll footage",
+    description="Stock video clip for B-roll / hero loop / ad motion.",
+)
+def _prompt_find_broll(
+    topic: str,
+    orientation: str = "landscape",
+    resolution: str = "4k",
+) -> str:
+    """Brief the agent for a B-roll video search."""
+    size_hint = "large" if resolution.lower() == "4k" else "medium"
+    return (
+        f"Find a stock video clip on Pexels for: {topic}.\n"
+        f"Call `pexels_search_videos` with orientation={orientation!r}, "
+        f"size={size_hint!r}, aspect_ratio='16:9'.\n"
+        "Return the best `video_url` (direct MP4) as a Markdown link "
+        "with the `uploader_name` credit."
+    )
+
+
+@mcp.prompt(
+    name="find_brand_match",
+    title="Match a brand color",
+    description="Search a stock photo that fits a brand hex color.",
+)
+def _prompt_find_brand_match(
+    query: str,
+    brand_hex_color: str,
+) -> str:
+    """Brief the agent for a color-driven photo search."""
+    return (
+        f"Find a stock photo on Pexels matching the brand color "
+        f"#{brand_hex_color.lstrip('#')} for: {query}.\n"
+        f"Call `pexels_search_photos` with color={brand_hex_color.lstrip('#')!r}.\n"
+        "Return the best `image_url` as a Markdown link, credit "
+        "`photographer`."
+    )
