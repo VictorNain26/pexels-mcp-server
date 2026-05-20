@@ -150,6 +150,31 @@ async def test_client_drops_none_query_params(httpx_mock: HTTPXMock) -> None:
         await client.search_photos(api_key="testkey", query="cat", orientation=None, color=None)
 
 
+# --- PexelsAPIError sanitization -----------------------------------------
+# Upstream response bodies are projected to a one-line agent-safe string
+# so a hostile / malformed Pexels response cannot smuggle control chars
+# or echo the caller's key into the LLM context.
+
+
+def test_pexels_api_error_strips_control_chars() -> None:
+    err = PexelsAPIError(500, "boom\x00\x07\nwith\ttab")
+    assert "\x00" not in str(err)
+    assert "\x07" not in str(err)
+    assert "boom" in str(err)
+
+
+def test_pexels_api_error_redacts_token_shaped_strings() -> None:
+    leaked = "x" * 56  # Pexels API keys are 56 chars of [A-Za-z0-9].
+    err = PexelsAPIError(403, f"forbidden for key {leaked} please rotate")
+    assert leaked not in str(err)
+    assert "<redacted>" in str(err)
+
+
+def test_pexels_api_error_caps_message_length() -> None:
+    err = PexelsAPIError(502, "x " * 1000)
+    assert len(str(err)) < 250
+
+
 # --- validate_key (BYOK setup probe) ------------------------------------
 #
 # ``validate_key`` hits ``/v1/collections`` (the caller's own collections)

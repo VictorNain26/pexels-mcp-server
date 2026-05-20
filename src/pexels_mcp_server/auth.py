@@ -63,6 +63,7 @@ import logging
 import secrets
 import time
 from dataclasses import dataclass, field
+from urllib.parse import urlparse
 
 from mcp.server.auth.provider import (
     AccessToken,
@@ -99,6 +100,33 @@ _SETUP_SESSION_TTL_SECONDS = 900
 # Scope advertised to clients via /.well-known/oauth-authorization-server.
 # A single coarse scope is enough for a read-only server.
 MCP_SCOPE = "mcp"
+
+
+# Hostnames allowed for ``http://`` redirect URIs. Anything else (a public
+# ``http://example.com``) must use ``https://`` per OAuth 2.1.
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
+
+
+def _validate_redirect_uri(uri: str) -> None:
+    """Reject redirect URIs that don't match the OAuth 2.1 allowlist.
+
+    Raises ``ValueError`` with a sanitized message — the URI is included
+    in the error so the client can fix it, but only after a length cap
+    and control-character strip so a hostile registration cannot smuggle
+    arbitrary bytes into the server log.
+    """
+    safe = "".join(c for c in uri[:200] if c.isprintable())
+    parsed = urlparse(uri)
+    if parsed.scheme == "https":
+        if not parsed.hostname:
+            raise ValueError(f"redirect_uri must include a host: {safe!r}")
+        return
+    if parsed.scheme == "http":
+        host = (parsed.hostname or "").lower()
+        if host in _LOOPBACK_HOSTS:
+            return
+        raise ValueError(f"redirect_uri must use https:// (or http:// loopback only): {safe!r}")
+    raise ValueError(f"redirect_uri scheme must be https or http (loopback only); got {safe!r}")
 
 
 @dataclass
@@ -169,10 +197,31 @@ class PexelsOAuthProvider(
         return await self._store.get_client(client_id)
 
     async def register_client(self, client_info: OAuthClientInformationFull) -> None:
+        """Validate the redirect URIs then persist the DCR registration.
+
+        RFC 7591 §2 requires the Authorization Server to validate the
+        redirect URIs provided at registration. Without validation an
+        attacker can register a client with
+        ``redirect_uri=https://attacker.com``, social-engineer the victim
+        into clicking the resulting ``/authorize`` link, harvest the
+        authorization code, and exchange it for a Pexels-key-bound access
+        token. We accept only ``https://`` (the OAuth 2.1 default) plus
+        loopback ``http://`` for local MCP Inspector / Claude Desktop
+        wiring; ``data:``, ``javascript:``, ``file:``, and arbitrary
+        custom schemes are refused.
+        """
         if not client_info.client_id:
             raise ValueError("No client_id provided")
+        if not client_info.redirect_uris:
+            raise ValueError("At least one redirect_uri is required")
+        for uri in client_info.redirect_uris:
+            _validate_redirect_uri(str(uri))
         await self._store.set_client(client_info)
-        logger.info("Registered OAuth client %s", client_info.client_id)
+        logger.info(
+            "Registered OAuth client %s (redirect URIs: %d)",
+            client_info.client_id,
+            len(client_info.redirect_uris),
+        )
 
     def _maybe_sweep_expired(self, now: float) -> None:
         """Drop expired authorization codes + setup sessions.
