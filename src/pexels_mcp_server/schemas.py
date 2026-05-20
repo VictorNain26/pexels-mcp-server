@@ -69,13 +69,11 @@ class Orientation(str, Enum):
     SQUARE = "square"
 
 
-class PhotoSize(str, Enum):
-    LARGE = "large"
-    MEDIUM = "medium"
-    SMALL = "small"
+class MediaSize(str, Enum):
+    """Pexels' ``size`` bucket. Same string values for photos and videos —
+    photos: large=24MP, medium=12MP, small=4MP; videos: large=4K,
+    medium=Full HD, small=HD."""
 
-
-class VideoSize(str, Enum):
     LARGE = "large"
     MEDIUM = "medium"
     SMALL = "small"
@@ -215,19 +213,34 @@ class Pagination(_StrictModel):
     )
 
 
-class SearchPhotosParams(Pagination):
+class _PostHocFilters(Pagination):
+    """Shared post-hoc filter fields + their validators.
+
+    ``aspect_ratio`` / ``min_width`` / ``min_height`` apply identically on
+    every search / list tool; the validators live here once so the three
+    concrete models stay declarative.
+    """
+
+    min_width: int | None = _min_width_field()
+    min_height: int | None = _min_height_field()
+    aspect_ratio: str | None = _aspect_ratio_field()
+
+    @field_validator("aspect_ratio")
+    @classmethod
+    def _check_aspect_ratio(cls, value: str | None) -> str | None:
+        return _validate_aspect_ratio(value)
+
+
+class SearchPhotosParams(_PostHocFilters):
     query: str = Field(min_length=1, max_length=200, description="Search query.")
     orientation: Orientation | None = Field(default=None)
-    size: PhotoSize | None = Field(default=None)
+    size: MediaSize | None = Field(default=None)
     color: str | None = Field(
         default=None,
         max_length=32,
         description="Named color or 6-digit hex without '#'.",
     )
     locale: str | None = Field(default=None, max_length=16)
-    min_width: int | None = _min_width_field()
-    min_height: int | None = _min_height_field()
-    aspect_ratio: str | None = _aspect_ratio_field()
 
     @field_validator("color")
     @classmethod
@@ -246,52 +259,31 @@ class SearchPhotosParams(Pagination):
     def _check_locale(cls, value: str | None) -> str | None:
         return _validate_locale(value)
 
-    @field_validator("aspect_ratio")
-    @classmethod
-    def _check_aspect_ratio(cls, value: str | None) -> str | None:
-        return _validate_aspect_ratio(value)
-
 
 class GetPhotoParams(_StrictModel):
     photo_id: int = Field(ge=1)
 
 
-class SearchVideosParams(Pagination):
+class SearchVideosParams(_PostHocFilters):
     query: str = Field(min_length=1, max_length=200)
     orientation: Orientation | None = Field(default=None)
-    size: VideoSize | None = Field(default=None)
+    size: MediaSize | None = Field(default=None)
     locale: str | None = Field(default=None, max_length=16)
-    min_width: int | None = _min_width_field()
-    min_height: int | None = _min_height_field()
-    aspect_ratio: str | None = _aspect_ratio_field()
 
     @field_validator("locale")
     @classmethod
     def _check_locale(cls, value: str | None) -> str | None:
         return _validate_locale(value)
 
-    @field_validator("aspect_ratio")
-    @classmethod
-    def _check_aspect_ratio(cls, value: str | None) -> str | None:
-        return _validate_aspect_ratio(value)
-
 
 class GetVideoParams(_StrictModel):
     video_id: int = Field(ge=1)
 
 
-class CollectionMediaParams(Pagination):
+class CollectionMediaParams(_PostHocFilters):
     collection_id: str = Field(min_length=1, max_length=64)
     type: CollectionMediaType | None = Field(default=None)
     sort: SortOrder | None = Field(default=None)
-    min_width: int | None = _min_width_field()
-    min_height: int | None = _min_height_field()
-    aspect_ratio: str | None = _aspect_ratio_field()
-
-    @field_validator("aspect_ratio")
-    @classmethod
-    def _check_aspect_ratio(cls, value: str | None) -> str | None:
-        return _validate_aspect_ratio(value)
 
     @field_validator("collection_id")
     @classmethod

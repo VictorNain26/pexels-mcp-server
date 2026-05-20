@@ -378,3 +378,13 @@ class PexelsOAuthProvider(
         if isinstance(token, AccessToken):
             await self._store.delete_access_token(token.token)
             await self._store.delete_pexels_key(token.token)
+
+    async def aclose(self) -> None:
+        """Drain the backing token store.
+
+        Public encapsulation hook for the FastMCP lifespan: callers must
+        not reach into ``_store`` directly. With the Redis backend this
+        closes the connection pool gracefully so a rolling Koyeb deploy
+        doesn't leave dangling sockets.
+        """
+        await self._store.aclose()

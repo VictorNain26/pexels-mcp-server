@@ -47,12 +47,11 @@ from .schemas import (
     CollectionMediaType,
     GetPhotoParams,
     GetVideoParams,
+    MediaSize,
     Orientation,
-    PhotoSize,
     SearchPhotosParams,
     SearchVideosParams,
     SortOrder,
-    VideoSize,
     parse_aspect_ratio,
 )
 from .storage import build_token_store
@@ -94,7 +93,7 @@ async def _lifespan(_server: FastMCP) -> AsyncIterator[AppContext]:
     finally:
         await client.aclose()
         if oauth_provider is not None:
-            await oauth_provider._store.aclose()
+            await oauth_provider.aclose()
         logger.info("Pexels client closed.")
 
 
@@ -396,7 +395,7 @@ async def pexels_search_photos(
     ctx: Context,  # type: ignore[type-arg]
     query: str,
     orientation: Orientation | None = None,
-    size: PhotoSize | None = None,
+    size: MediaSize | None = None,
     color: str | None = None,
     locale: str | None = None,
     min_width: int | None = None,
@@ -496,7 +495,7 @@ async def pexels_search_videos(
     ctx: Context,  # type: ignore[type-arg]
     query: str,
     orientation: Orientation | None = None,
-    size: VideoSize | None = None,
+    size: MediaSize | None = None,
     locale: str | None = None,
     min_width: int | None = None,
     min_height: int | None = None,
