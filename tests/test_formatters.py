@@ -193,9 +193,9 @@ def test_envelope_omits_filter_diagnostics_when_payload_has_none() -> None:
 
 
 # --- SDK convert_result patch regression ----------------------------------
-# The MCP Python SDK 1.27 dumps tool results via ``model_dump(mode="json")``
-# without ``exclude_unset=True``, leaking ``null`` for every optional
-# TypedDict field. We patch ``FuncMetadata.convert_result`` to add the
+# The MCP Python SDK (1.27.1 through at least 1.29.1) dumps tool results
+# via ``model_dump(mode="json")`` without ``exclude_unset=True``, leaking
+# ``null`` for every optional TypedDict field. We patch ``FuncMetadata.convert_result`` to add the
 # missing flag (see ``_sdk_patches.py``). This test guards both that the
 # patch is applied and that it produces the right structured payload.
 
