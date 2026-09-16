@@ -1,9 +1,10 @@
 """Upstream-bound patches against the ``mcp`` Python SDK.
 
-These patches address two issues with ``mcp 1.27.1`` that bleed tokens
-into every tool call. Both should eventually be fixed upstream — this
-module is the only place in the codebase allowed to mutate third-party
-state, and the only contract is that ``apply()`` is idempotent.
+These patches address two issues in the ``mcp`` SDK (first seen in
+1.27.1, still present in 1.29.1) that bleed tokens into every tool
+call. Both should eventually be fixed upstream — this module is the
+only place in the codebase allowed to mutate third-party state, and
+the only contract is that ``apply()`` is idempotent.
 
 Issue 1 — ``model_dump`` does not pass ``exclude_unset=True``
 -----------------------------------------------------------
