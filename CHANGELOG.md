@@ -86,13 +86,13 @@ Cumulative notes for everything landed on `main` since v0.6.0.
 
 ### Performance
 
-- **Tool result no longer duplicated on the wire**. The SDK's default
-  shipped the same payload twice: once as `structuredContent` and
-  once as indented JSON in `content[]`. A 15-photo search burned
-  ~3 100 tokens per call this way. Our `_sdk_patches.py` now emits a
-  45-char marker in `content[]` while `structuredContent` carries the
-  canonical payload — **−1 500 tokens per tool call** on typical
-  searches. Killswitch: `_DROP_DUPLICATE_TEXT_CONTENT = False`.
+- **Smaller text copy of the tool result**. The SDK sends the payload
+  twice: once as `structuredContent` and once as `indent=2` JSON in
+  `content[]`. `_sdk_patches.py` keeps both copies but writes the text
+  one as compact JSON, because claude.ai's custom-connector path reads
+  only `content`. A mocked 15-photo search measures 11 336 chars in
+  total, against 12 478 with `indent=2` text. (A first version of this
+  release replaced the text with a 45-char marker; #30 reverted that.)
 - **SDK `model_dump` patched** to pass `exclude_unset=True`. Without it,
   optional TypedDict fields leak as `"field": null` in
   `structuredContent` and the strict jsonschema rejects the call with
@@ -103,8 +103,8 @@ Cumulative notes for everything landed on `main` since v0.6.0.
   `FilterDiagnostics`, all the `*Result` envelopes) removed because
   pydantic surfaces them as `description` in every referencing
   `$defs` — net `tools/list` payload now 15 210c vs 18 016c on main.
-- `serverInfo.instructions` reduced to one sentence (attribution
-  requirement only — the tool list is already in `tools/list`).
+- `serverInfo.instructions` reduced to a short attribution-first brief
+  (the tool list is already in `tools/list`).
 
 ### Removed
 
