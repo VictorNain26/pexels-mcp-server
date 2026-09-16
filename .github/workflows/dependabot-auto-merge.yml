@@ -55,11 +55,17 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_URL: ${{ github.event.pull_request.html_url }}
+          UPDATE_TYPE: ${{ steps.meta.outputs.update-type }}
+          DEP_NAMES: ${{ steps.meta.outputs.dependency-names }}
+          ECOSYSTEM: ${{ steps.meta.outputs.package-ecosystem }}
+          DEP_TYPE: ${{ steps.meta.outputs.dependency-type }}
         run: |
-          gh pr review --approve "$PR_URL" --body "Auto-approved by policy: ${{ steps.meta.outputs.update-type }} on ${{ steps.meta.outputs.dependency-type || steps.meta.outputs.package-ecosystem }}."
+          gh pr review --approve "$PR_URL" --body "Auto-approved by policy: $UPDATE_TYPE on $DEP_NAMES ($ECOSYSTEM, $DEP_TYPE)."
           gh pr merge --auto --squash "$PR_URL"
 
       - name: Annotate PRs left for manual review
+        # fetch-metadata reports GitHub Actions bumps as "direct:production",
+        # hence the explicit ecosystem check to keep action minors out.
         if: |
           steps.meta.outputs.update-type == 'version-update:semver-major' ||
           (steps.meta.outputs.update-type == 'version-update:semver-minor' &&
@@ -68,5 +74,9 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_URL: ${{ github.event.pull_request.html_url }}
+          UPDATE_TYPE: ${{ steps.meta.outputs.update-type }}
+          DEP_NAMES: ${{ steps.meta.outputs.dependency-names }}
+          ECOSYSTEM: ${{ steps.meta.outputs.package-ecosystem }}
+          DEP_TYPE: ${{ steps.meta.outputs.dependency-type }}
         run: |
-          gh pr comment "$PR_URL" --body "🔍 Manual review required: ${{ steps.meta.outputs.update-type }} update for ${{ steps.meta.outputs.dependency-name }} (${{ steps.meta.outputs.dependency-type }}). See \`.github/workflows/dependabot-auto-merge.yml\` for the policy."
+          gh pr comment "$PR_URL" --body "🔍 Manual review required: $UPDATE_TYPE update for $DEP_NAMES ($ECOSYSTEM, $DEP_TYPE). See \`.github/workflows/dependabot-auto-merge.yml\` for the policy."
