@@ -20,7 +20,7 @@ import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import Any, NoReturn
+from typing import TYPE_CHECKING, Any, NoReturn, TypeAlias
 
 from mcp.server.auth.settings import AuthSettings, ClientRegistrationOptions
 from mcp.server.fastmcp import Context, FastMCP
@@ -59,10 +59,15 @@ from .schemas import (
     SearchPhotosParams,
     SearchVideosParams,
     SortOrder,
+    _PostHocFilters,
     parse_aspect_ratio,
 )
 from .storage import build_token_store
 from .transport import pexels_key_ctx
+
+if TYPE_CHECKING:
+    from mcp.server.session import ServerSession
+    from starlette.requests import Request
 
 logger = logging.getLogger("pexels_mcp_server.server")
 
@@ -94,6 +99,15 @@ class AppContext:
     client: PexelsClient
 
 
+if TYPE_CHECKING:
+    PexelsContext: TypeAlias = Context[ServerSession, AppContext, Request]
+else:
+    # Resource templates wrap handlers in pydantic ``validate_call``; a
+    # parametrized Context annotation makes it rebuild the injected
+    # instance, which loses the request context.
+    PexelsContext = Context
+
+
 @asynccontextmanager
 async def _lifespan(_server: FastMCP) -> AsyncIterator[AppContext]:
     """Boot one PexelsClient for the server lifetime + cleanup the auth store.
@@ -115,7 +129,7 @@ async def _lifespan(_server: FastMCP) -> AsyncIterator[AppContext]:
         logger.info("Pexels client closed.")
 
 
-async def _resolve_api_key(ctx: Context) -> str | None:  # type: ignore[type-arg]
+async def _resolve_api_key(ctx: PexelsContext) -> str | None:
     """Resolve the Pexels API key for the current call.
 
     Priority:
@@ -321,9 +335,8 @@ _READ_ONLY = ToolAnnotations(
 )
 
 
-def _client(ctx: Context) -> PexelsClient:  # type: ignore[type-arg]
-    app_ctx: AppContext = ctx.request_context.lifespan_context
-    return app_ctx.client
+def _client(ctx: PexelsContext) -> PexelsClient:
+    return ctx.request_context.lifespan_context.client
 
 
 def _raise_invalid_params(exc: ValidationError) -> NoReturn:
@@ -410,7 +423,7 @@ def _apply_filters(payload: dict[str, Any], params: Any, *, items_key: str) -> N
     annotations=_READ_ONLY,
 )
 async def pexels_search_photos(
-    ctx: Context,  # type: ignore[type-arg]
+    ctx: PexelsContext,
     query: str,
     orientation: Orientation | None = None,
     size: MediaSize | None = None,
@@ -472,7 +485,7 @@ async def pexels_search_photos(
     annotations=_READ_ONLY,
 )
 async def pexels_get_photo(
-    ctx: Context,  # type: ignore[type-arg]
+    ctx: PexelsContext,
     photo_id: int,
 ) -> SinglePhotoResult:
     """Fetch one Pexels photo by id.
@@ -497,7 +510,7 @@ async def pexels_get_photo(
     annotations=_READ_ONLY,
 )
 async def pexels_search_videos(
-    ctx: Context,  # type: ignore[type-arg]
+    ctx: PexelsContext,
     query: str,
     orientation: Orientation | None = None,
     size: MediaSize | None = None,
@@ -555,7 +568,7 @@ async def pexels_search_videos(
     annotations=_READ_ONLY,
 )
 async def pexels_get_video(
-    ctx: Context,  # type: ignore[type-arg]
+    ctx: PexelsContext,
     video_id: int,
 ) -> SingleVideoResult:
     """Fetch one Pexels video by id.
@@ -580,7 +593,7 @@ async def pexels_get_video(
     annotations=_READ_ONLY,
 )
 async def pexels_get_collection_media(
-    ctx: Context,  # type: ignore[type-arg]
+    ctx: PexelsContext,
     collection_id: str,
     type: CollectionMediaType | None = None,
     sort: SortOrder | None = None,
@@ -630,7 +643,7 @@ async def pexels_get_collection_media(
     annotations=_READ_ONLY,
 )
 async def pexels_get_curated_photos(
-    ctx: Context,  # type: ignore[type-arg]
+    ctx: PexelsContext,
     min_width: int | None = None,
     min_height: int | None = None,
     aspect_ratio: str | None = None,
@@ -673,7 +686,7 @@ async def pexels_get_curated_photos(
     annotations=_READ_ONLY,
 )
 async def pexels_get_popular_videos(
-    ctx: Context,  # type: ignore[type-arg]
+    ctx: PexelsContext,
     min_width: int | None = None,
     min_height: int | None = None,
     min_duration: int | None = None,
@@ -706,13 +719,10 @@ async def pexels_get_popular_videos(
         )
     except ValidationError as exc:
         _raise_invalid_params(exc)
-    # Only oversample when aspect_ratio is set — min_*/duration are
-    # already filtered server-side by Pexels.
-    fetch_per_page = (
-        min(int(params.per_page) * 4, MAX_PER_PAGE)
-        if params.aspect_ratio is not None
-        else int(params.per_page)
-    )
+    # min_width / min_height are Pexels-side filters on this endpoint, so
+    # aspect_ratio is the only post-hoc filter (and the only reason to
+    # oversample).
+    post_hoc = _PostHocFilters(aspect_ratio=params.aspect_ratio, per_page=params.per_page)
     payload, _ = await _client(ctx).get_popular_videos(
         api_key=await _resolve_api_key(ctx),
         min_width=params.min_width,
@@ -720,27 +730,9 @@ async def pexels_get_popular_videos(
         min_duration=params.min_duration,
         max_duration=params.max_duration,
         page=params.page,
-        per_page=fetch_per_page,
+        per_page=_fetch_per_page(post_hoc),
     )
-    # Apply only the aspect_ratio post-hoc filter — Pexels already
-    # honoured min_width/min_height server-side.
-    if params.aspect_ratio is not None:
-        target_ratio = parse_aspect_ratio(params.aspect_ratio)
-        items = payload.get("videos") or []
-        pre_count = len(items)
-        filtered = filter_by_dimensions(items, aspect_ratio=target_ratio)
-        payload["videos"] = filtered[: int(params.per_page)]
-        payload["per_page"] = int(params.per_page)
-        if pre_count > 0 and not filtered:
-            payload["filter_diagnostics"] = {
-                "applied_filters": {"aspect_ratio": params.aspect_ratio},
-                "pre_filter_count": pre_count,
-                "post_filter_count": 0,
-                "suggestion": (
-                    "Filters rejected every candidate. Retry without aspect_ratio "
-                    "(crop to target ratio in post)."
-                ),
-            }
+    _apply_filters(payload, post_hoc, items_key="videos")
     return format_video_list(payload)
 
 
@@ -750,7 +742,7 @@ async def pexels_get_popular_videos(
     annotations=_READ_ONLY,
 )
 async def pexels_get_featured_collections(
-    ctx: Context,  # type: ignore[type-arg]
+    ctx: PexelsContext,
     page: int = 1,
     per_page: int = 15,
 ) -> FeaturedCollectionsResult:
@@ -800,7 +792,7 @@ async def pexels_get_featured_collections(
 )
 async def _resource_photo(
     photo_id: str,
-    ctx: Context,  # type: ignore[type-arg]
+    ctx: PexelsContext,
 ) -> SinglePhotoResult:
     try:
         params = GetPhotoParams(photo_id=int(photo_id))
@@ -819,7 +811,7 @@ async def _resource_photo(
 )
 async def _resource_video(
     video_id: str,
-    ctx: Context,  # type: ignore[type-arg]
+    ctx: PexelsContext,
 ) -> SingleVideoResult:
     try:
         params = GetVideoParams(video_id=int(video_id))
@@ -838,7 +830,7 @@ async def _resource_video(
 )
 async def _resource_collection(
     collection_id: str,
-    ctx: Context,  # type: ignore[type-arg]
+    ctx: PexelsContext,
 ) -> CollectionMediaResult:
     try:
         params = CollectionMediaParams(collection_id=collection_id)
@@ -862,11 +854,6 @@ async def _resource_collection(
 # the LLM gets a structured request instead of free-form text. This
 # tends to cut the agent's back-and-forth on parameter clarification
 # (each saved round-trip beats the ~600 token cost of ``prompts/list``).
-#
-# A previous third prompt (``find_brand_match``) was dropped because
-# ``find_hero_image`` already accepts an optional ``brand_color`` —
-# carrying a near-duplicate variant doubled the menu noise for zero
-# new behaviour.
 
 
 @mcp.prompt(
