@@ -106,6 +106,13 @@ Cumulative notes for everything landed on `main` since v0.6.0.
 - `serverInfo.instructions` reduced to a short attribution-first brief
   (the tool list is already in `tools/list`).
 
+### Documentation
+
+- README no longer claims the deployment scales horizontally without
+  sticky sessions. Only the MCP transport is stateless: pending `/setup`
+  sessions and authorization codes are process-local, so the OAuth flow
+  requires a single replica (see `CLAUDE.md`).
+
 ### Removed
 
 - `src/pexels_mcp_server/previews.py`, `types.py`, the MCP Apps
@@ -158,7 +165,7 @@ Cumulative notes for everything landed on `main` since v0.6.0.
 - `.editorconfig` for editor-agnostic indentation rules.
 - Per-request Pexels API key via the `X-Pexels-Api-Key` HTTP header. Hosted deployments no longer need (and should not have) a server-wide `PEXELS_API_KEY`; each caller supplies their own key and pays their own quota.
 - ASGI middleware `pexels_key_middleware` that extracts the header into a `ContextVar`; tool handlers resolve the effective key per call.
-- `stateless_http=True, json_response=True` on the `FastMCP` instance. Streamable HTTP now runs fully stateless: no session IDs, single JSON response per call. This matches the SDK-recommended posture for horizontally scaled hosted deployments and aligns with the MCP draft spec direction (sessions removed).
+- `stateless_http=True, json_response=True` on the `FastMCP` instance. Streamable HTTP now runs fully stateless: no session IDs, single JSON response per call. This matches the SDK-recommended transport posture for horizontally scaled hosted deployments and aligns with the MCP draft spec direction (sessions removed); the OAuth flow added later still requires a single replica.
 - `timeout_graceful_shutdown=8` on the uvicorn entry point so in-flight tool calls finish cleanly during Koyeb / Fly rolling deploys.
 - `MCP_ALLOW_UNAUTHED=1` escape hatch for local development without a Bearer token.
 
