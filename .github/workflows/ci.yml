@@ -49,7 +49,7 @@ jobs:
       - name: Run tests with coverage
         # Threshold tracks the floor under which a regression should fail
         # CI. Ratchet it up by hand after each meaningful coverage gain.
-        run: uv run pytest -q --cov=src/pexels_mcp_server --cov-report=term-missing --cov-fail-under=75
+        run: uv run pytest -q --cov=src/pexels_mcp_server --cov-report=term-missing --cov-fail-under=85
 
   security-audit:
     # Dependency CVE scan. Runs alongside the unit-test matrix so a freshly
