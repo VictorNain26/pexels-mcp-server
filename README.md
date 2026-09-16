@@ -56,32 +56,42 @@ instead of asking the user for parameters.
 
 ## Token economy
 
-Every byte that goes onto the wire was audited. Cumulative gains vs the
-SDK defaults:
+Payloads are kept small, but the tool result is still sent twice. What
+the server does:
 
+- **Projected payloads.** Tools return a few fields per item (`id`, `alt`,
+  `page_url`, credit, dimensions, one `image_url` / `video_url`) instead
+  of the full Pexels object with its eight `src` renditions.
 - **Tool descriptions** trimmed to the minimum LLM-actionable signal
   (USE WHEN / DO NOT USE / filters / return shape).
 - **Type docstrings** removed from `MediaSize`, `PhotoProjection`,
   `VideoProjection`, `FilterDiagnostics` etc.: they leaked as `description`
   fields into every tool's `$defs`, duplicated across all tools that
   referenced them. Now Python comments only.
-- **`serverInfo.instructions`** reduced to one sentence (the attribution
-  requirement); the tool list is already shipped by `tools/list`.
+- **`serverInfo.instructions`** kept to three short sentences (what the
+  server is, the attribution requirement, how to use the CDN URLs); the
+  tool list is already shipped by `tools/list`.
 - **SDK patch** (see [`_sdk_patches.py`](src/pexels_mcp_server/_sdk_patches.py)):
   - Forces `model_dump(exclude_unset=True)` so unset optional TypedDict
     fields don't leak as `"field": null`.
-  - Replaces the SDK's duplicate-content behaviour: instead of shipping
-    the payload **twice** (once as `structuredContent`, once as
-    indented JSON in `content[]`), tools now ship the structured payload
-    plus a 45-char marker in `content[]` pointing at it. Saves ~1500
-    tokens per tool call on a 15-photo search.
+  - Writes the text copy in `content[]` as compact JSON instead of the
+    SDK's `indent=2`. The copy itself stays: claude.ai's custom-connector
+    path reads only `content`, so the payload is sent both as
+    `structuredContent` and as text.
 
-Numbers for a typical 15-photo search call:
+Measured on `pexels_search_photos(query="paris", per_page=15)` through an
+in-process MCP client session (`mcp.shared.memory`), with the Pexels API
+mocked by a 15-photo response of about 20 100 chars:
 
-|  | content text | structuredContent | total |
+|  | `content[0].text` | `structuredContent` (compact JSON) | total |
 |---|---|---|---|
-| SDK default | 7 100c (indented dup) | 5 400c | 12 500c (~3 100 tok) |
-| This server | 45c (marker) | 5 400c | **5 450c (~1 360 tok)** |
+| `indent=2` text (SDK default) | 6 810 chars | 5 668 chars | 12 478 chars |
+| This server (compact text) | 5 668 chars | 5 668 chars | **11 336 chars** |
+
+The compact text saves about 17 % of the text copy (9 % of the whole
+result). Other sizes from the same run: `serverInfo.instructions` is
+298 chars, and `tools/list` for the 8 tools is 24 205 chars of compact
+JSON, 4 033 of which are descriptions.
 
 ## How the agent picks the best image
 
@@ -197,6 +207,18 @@ curl -i -X POST "$URL/mcp" \
 | **Claude Code** | `claude mcp add pexels --transport http https://<host>/mcp`. |
 | **MCP Inspector** | `npx @modelcontextprotocol/inspector` → paste the URL. |
 
+## Install
+
+This package (`pexels-mcp` in `pyproject.toml`) is **not published on
+PyPI**; install it from this repository. The `pexels-mcp-server` name on
+PyPI belongs to an unrelated project, so do not `pip install` it.
+
+Run the stdio server straight from Git:
+
+```bash
+PEXELS_API_KEY=your-key uvx --from git+https://github.com/VictorNain26/pexels-mcp-server pexels-mcp-server
+```
+
 ## Local development
 
 ```bash
@@ -265,11 +287,12 @@ uv run python -m pytest
 }
 ```
 
-- `content[0]` (45-char marker): `"See structuredContent for the result payload."`
+- `content[0]`: the same object as compact JSON text
+  (`{"page":1,"per_page":1,...}`).
 
-The marker exists so backwards-compat clients reading `content` see a
-non-empty block. Modern clients (claude.ai web, Claude Desktop, MCP
-Inspector 0.10+) consume `structuredContent` directly.
+The text copy is there because claude.ai's custom-connector path passes
+only `content` to the model. Clients that read `structuredContent` can
+ignore it.
 
 ## Three usage examples
 
