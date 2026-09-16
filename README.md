@@ -155,7 +155,10 @@ accepts an `X-Pexels-Api-Key` HTTP header as a fallback.
 ### Persistent sessions (Redis, optional but recommended in prod)
 
 Without `REDIS_URL`, OAuth state is in-memory and every Koyeb deploy
-forces users to re-walk `/setup`. With Redis, sessions survive restarts.
+forces users to re-walk `/setup`. With Redis, registered clients, access
+tokens and bound keys survive restarts. Short-lived OAuth state (pending
+`/setup` sessions, authorization codes) stays in process memory either
+way, so Redis does not make multiple replicas safe.
 The bound Pexels key is encrypted client-side with Fernet (AES-128-CBC +
 HMAC-SHA256) before being written — a leaked Redis dump alone yields
 opaque ciphertext.
@@ -357,10 +360,15 @@ and matching URLs and can surface them in the user-facing answer.
   `OAuthAuthorizationServerProvider`. RFC 9728 PRM, RFC 8414 ASM, RFC 7591
   DCR, PKCE — all served by the SDK. The only custom routes are
   `GET /` (landing) and `GET/POST /setup` (BYOK form).
-- **Stateless HTTP by default.** `stateless_http=True, json_response=True`
-  so deployment scales horizontally without sticky sessions. Trade-off:
-  no sampling / no `ctx.report_progress` / no resource subscriptions —
-  documented in [`CLAUDE.md`](CLAUDE.md).
+- **Stateless MCP transport, single-replica OAuth.**
+  `stateless_http=True, json_response=True`: the MCP transport allocates
+  no session IDs, so tool calls need no sticky sessions. Trade-off: no
+  sampling / no `ctx.report_progress` / no resource subscriptions —
+  documented in [`CLAUDE.md`](CLAUDE.md). The server as a whole is **not**
+  horizontally scalable yet: pending `/setup` sessions, authorization
+  codes and the transient code→key binding live in process memory (even
+  with `REDIS_URL`), so an OAuth flow that hits a second replica fails.
+  The rate limiter is per-process too. Run one replica.
 - **Read-only by construction.** Every tool advertises
   `readOnlyHint=true, destructiveHint=false, idempotentHint=true,
   openWorldHint=true` plus a `title`.
